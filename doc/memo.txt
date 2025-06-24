@@ -1,0 +1,6 @@
+./layers, ./modelsは無視していい．
+
+
+
+BaseMethod: patchTST, iTransformer, ...
+OnlineMethod: Online, SOLID, Proceed, OneNet, FSNet, ...

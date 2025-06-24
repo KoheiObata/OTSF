@@ -1,0 +1,4 @@
+run.pyをリファクタリングして，run_refactored.pyを作ります．
+まずは，run.pyのよくない点を挙げてください．
+
+では，run_refactored.pyを作成して，引数適宜について改善してください．
