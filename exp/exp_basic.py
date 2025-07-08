@@ -80,8 +80,7 @@ class Exp_Basic(object):
         Returns:
             tuple: (データセット, データローダー)
         """
-        data_set, data_loader = data_provider(args=self.args, flag=flag, device=self.device,
-                                              wrap_class=self.args.wrap_data_class, **self.wrap_data_kwargs, **kwargs)
+        data_set, data_loader = data_provider(args=self.args, flag=flag, device=self.device, wrap_class=self.args.wrap_data_class, **self.wrap_data_kwargs, **kwargs)
         return data_set, data_loader
 
     def _select_optimizer(self, filter_frozen=True, return_self=True, model=None):
@@ -172,6 +171,7 @@ class Exp_Basic(object):
             batch_y = batch_y.to(self.device)
         if isinstance(outputs, tuple):
             outputs = outputs[0]  # タプルの場合は最初の要素を使用
+        # print("outputs.shape:",outputs.shape,"batch_y.shape:",batch_y.shape)
         loss = criterion(outputs, batch_y)
         return loss
 

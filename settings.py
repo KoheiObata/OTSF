@@ -8,6 +8,10 @@ need_x_mark += [name + '_Ensemble' for name in need_x_mark]  # アンサンブ�
 no_extra_param = ['Online', 'ER', 'DERpp']  # 追加パラメータが不要な手法
 peft_methods = ['lora', 'adapter', 'ssf', 'mam_adapter', 'basic_tuning']  # PEFT手法のリスト
 
+# base_methods = ['Autoformer', 'Transformer', 'Informer']
+# online_methods = ['Online', 'FSNet', 'OneNet', 'SOLID', 'Proceed', 'BTOA', 'Proposed']
+# online_
+
 # データセット別の設定
 # 各データセットのファイル名、ターゲット列、特徴量次元、バッチサイズなどを定義
 data_settings = {
@@ -150,18 +154,15 @@ def get_hyperparams(data, model, args, reduce_bs=True):
         if data == 'ETTh1':
             hyperparam['lradj'] = 'typy4'
             hyperparam['tmax'] = 20
-            # hyperparam['label_len'] = 168
         elif data == 'ETTh2':
             hyperparam['dropout'] = 1
             hyperparam['tmax'] = 20
-            # hyperparam['label_len'] = 168
         elif data == 'Traffic':
             hyperparam['dropout'] = 0.3
         elif data == 'ECL':
             hyperparam['tmax'] = 10
         elif data == 'Illness':
             hyperparam['patch_size'] = 24
-            # hyperparam['label_len'] = 18
             hyperparam['batch_size'] = 16
 
         if data in ['ETTm1', 'ETTm2', 'ECL', 'Traffic', 'Weather', 'WTH']:
@@ -181,7 +182,7 @@ pretrain_lr_online_dict = {
      'TCN_Ensemble': {'ECL': 0.003, 'ETTh2': 0.003, 'ETTm1': 0.0003, 'Weather': 0.001, 'Traffic': 0.003},
      'FSNet_RevIN': {'ECL': 0.003, 'ETTh2': 0.003, 'ETTm1': 0.001, 'Weather': 0.003, 'Traffic': 0.003},
     'GPT4TS': {'ETTh2': 0.0001, 'ETTm1': 0.0001, 'Traffic': 0.001, 'Weather': 0.0001, 'ECL': 0.0001},
-    'PatchTST': {'ETTh2': 0.0001, 'ETTm1': 0.0001, 'Traffic': 0.0001, 'Weather': 0.0001, 'ECL': 0.0001},
+    'PatchTST': {'ETTh1': 0.0001, 'ETTh2': 0.0001, 'ETTm1': 0.0001, 'Traffic': 0.0001, 'Weather': 0.0001, 'ECL': 0.0001},
     'iTransformer': {'ETTh2': 0.0001, 'ETTm1': 0.0001, 'Traffic': 0.001, 'Weather': 0.00001, 'ECL': 0.0005},
     'NLinear': {'ETTh2': 0.05, 'ETTm1': 0.05, 'Traffic': 0.005, 'Weather': 0.01, 'ECL': 0.01},
     'Informer_RevIN': {'ETTh2': 0.0001, 'ETTm1': 0.0001, 'Traffic': 0.0001, 'Weather': 0.0001, 'ECL': 0.0001},
@@ -192,7 +193,7 @@ pretrain_lr_online_dict = {
 
 # 事前学習用の学習率設定
 pretrain_lr_dict = {
-    'PatchTST': {'ETTh2': 0.0001, 'ETTm1': 0.0001, 'Traffic': 0.0001, 'Weather': 0.0001, 'ECL': 0.0001},
+    'PatchTST': {'ETTh1': 0.0001, 'ETTh2': 0.0001, 'ETTm1': 0.0001, 'Traffic': 0.0001, 'Weather': 0.0001, 'ECL': 0.0001},
     'iTransformer': {'ETTh2': 0.0001, 'ETTm1': 0.0001, 'Traffic': 0.001, 'Weather': 0.0001, 'ECL': 0.0005},
 }
 

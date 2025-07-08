@@ -11,7 +11,8 @@ data=ETTm1
 model_name=PatchTST
 online_method=Online
 
-for pred_len in 24 48 96
+# for pred_len in 24 48 96
+for pred_len in 48
 do
 for online_learning_rate in 0.0000003
 do
@@ -21,7 +22,7 @@ do
     --model $model_name \
     --seq_len $seq_len \
     --pred_len $pred_len \
-    --itr 3 --skip $filename --online_method $online_method \
+    --itr 1 --skip $filename --online_method $online_method \
     --pin_gpu True --reduce_bs False \
     --save_opt --only_test \
     --online_learning_rate $online_learning_rate >> $filename 2>&1

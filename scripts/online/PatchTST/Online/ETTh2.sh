@@ -6,7 +6,7 @@ if [ ! -d "./logs/online" ]; then
     mkdir ./logs/online
 fi
 
-seq_len=336
+seq_len=60
 data=ETTh2
 model_name=PatchTST
 online_method=Online
@@ -15,6 +15,7 @@ online_method=Online
 for pred_len in 48
 do
 for online_learning_rate in 0.00003
+# for online_learning_rate in 0.0003 0.0001 0.00001 0.000001
 do
   filename=logs/online/$model_name'_'$online_method'_'$data'_'$pred_len'_onlinelr'$online_learning_rate.log2
   python -u run.py \

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from typing import Union
 
 import numpy as np
@@ -13,6 +14,13 @@ warnings.filterwarnings('ignore')
 
 
 def get_alldata(filename='electricity.csv', root_path='./'):
+    """
+    指定されたファイル名とルートパスから時系列データを読み込み、
+    pandas.DataFrameとして返す関数。
+    - CSV, HDF5, NPZ, テキストなど複数のフォーマットに対応。
+    - windデータやnycデータなど、ファイル名に応じて日付カラムの生成や整形も行う。
+    - 最終的に'date'カラムが先頭になるように整形。
+    """
     path = os.path.join(root_path, filename)
     if filename.endswith('.csv'):
         df = pd.read_csv(path)
@@ -48,6 +56,14 @@ def get_alldata(filename='electricity.csv', root_path='./'):
 
 
 class Dataset_ETT_hour(Dataset):
+    """
+    ETT(hour)データセット用のPyTorch Datasetクラス。
+    - データの読み込み、スケーリング、時系列特徴量の生成、
+      学習/検証/テスト分割、getitemによるサンプル抽出などを担当。
+    - seq_len, label_len, pred_lenで系列長を柔軟に指定可能。
+    - features='S'（単変量）/ 'M'（多変量）/ 'MS'（多変量+target）に対応。
+    - __getitem__でモデル入力・出力・時刻特徴量を返す。
+    """
     def __init__(self, root_path, flag='train', size=None,
                  features='S', data_path='ETTh1.csv', ratio=None, borders=None,
                  target='OT', scale=True, timeenc=0, freq='h', train_only=False, border=None):
@@ -78,7 +94,16 @@ class Dataset_ETT_hour(Dataset):
         self.data_path = data_path
         self.__read_data__()
 
+        # print("seq_len:",self.seq_len,"label_len:",self.label_len,"pred_len:",self.pred_len)
+
     def __read_data__(self):
+        """
+        データの読み込み・スケーリング・分割・時刻特徴量生成を行う内部関数。
+        - train/val/testの境界はbordersまたはデフォルト値で決定。
+        - featuresの種類に応じてデータ抽出。
+        - スケーリングは訓練データのみでfit。
+        - 時刻特徴量はutil.timefeatures.time_featuresで生成。
+        """
         self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path,
                                           self.data_path))
@@ -123,6 +148,13 @@ class Dataset_ETT_hour(Dataset):
         self.data_stamp = torch.from_numpy(self.data_stamp).float()
 
     def __getitem__(self, index):
+        """
+        指定インデックスから系列データ（入力・出力・時刻特徴量）を抽出して返す。
+        - seq_x: 入力系列
+        - seq_y: 予測対象系列
+        - seq_x_mark: 入力系列の時刻特徴量
+        - seq_y_mark: 予測対象系列の時刻特徴量
+        """
         s_begin = index
         s_end = s_begin + self.seq_len
         r_begin = s_end - self.label_len
@@ -132,16 +164,30 @@ class Dataset_ETT_hour(Dataset):
         seq_y = self.data_y[s_end:r_end]
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
-
+        # print("seq_x.shape:",seq_x.shape,"seq_y.shape:",seq_y.shape,"seq_x_mark.shape:",seq_x_mark.shape,"seq_y_mark.shape:",seq_y_mark.shape)
         return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
+        """
+        データセットの長さ（サンプル数）を返す。
+        """
         return len(self.data_x) - self.seq_len - self.pred_len + 1
 
     def inverse_transform(self, data):
+        """
+        スケーリング前の値に逆変換する。
+        """
         return self.scaler.inverse_transform(data)
 
 class Dataset_ETT_minute(Dataset):
+    """
+    ETT(minute)データセット用のPyTorch Datasetクラス。
+    - データの読み込み、スケーリング、時系列特徴量の生成、
+      学習/検証/テスト分割、getitemによるサンプル抽出などを担当。
+    - seq_len, label_len, pred_lenで系列長を柔軟に指定可能。
+    - features='S'（単変量）/ 'M'（多変量）/ 'MS'（多変量+target）に対応。
+    - __getitem__でモデル入力・出力・時刻特徴量を返す。
+    """
     def __init__(self, root_path, flag='train', size=None,
                  features='S', data_path='ETTm1.csv', ratio=None, borders=None,
                  target='OT', scale=True, timeenc=0, freq='t', train_only=False, border=None):
@@ -174,8 +220,7 @@ class Dataset_ETT_minute(Dataset):
 
     def __read_data__(self):
         self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path,
-                                          self.data_path))
+        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
 
         if self.borders is None:
             border1s = [0, 12 * 30 * 24 * 4 - self.seq_len, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4 - self.seq_len]
@@ -236,6 +281,13 @@ class Dataset_ETT_minute(Dataset):
         return self.scaler.inverse_transform(data)
 
 class Dataset_Custom(Dataset):
+    """
+    任意のカスタム時系列データセット用のPyTorch Datasetクラス。
+    - get_alldata関数を用いて多様なフォーマットのデータを読み込み。
+    - split_ratioで学習/検証/テストの分割比率を柔軟に指定可能。
+    - features='S'（単変量）/ 'M'（多変量）/ 'MS'（多変量+target）に対応。
+    - __getitem__でモデル入力・出力・時刻特徴量を返す。
+    """
     def __init__(self, root_path, flag='train', size=None,
                  features='S', data_path='ETTh1.csv', ratio=None, borders=None,
                  target='OT', scale=True, timeenc=0, freq='h', train_only=False, border=None):
@@ -347,6 +399,12 @@ class Dataset_Custom(Dataset):
 
 
 class Dataset_ETT_hour_CI(Dataset_ETT_hour):
+    """
+    ETT(hour)データセットの各特徴量（変数）ごとに系列を抽出するCI（Channel-Individual）拡張クラス。
+    - 通常のDataset_ETT_hourの系列抽出を特徴量ごとに分割して返す。
+    - __getitem__で指定特徴量のみの系列を返す。
+    - __len__は特徴量数倍となる。
+    """
     def __init__(self, root_path, *args, **kwargs):
         super().__init__(root_path, *args, **kwargs)
         self.enc_in = self.data_x.shape[-1]
@@ -371,6 +429,12 @@ class Dataset_ETT_hour_CI(Dataset_ETT_hour):
 
 
 class Dataset_ETT_minute_CI(Dataset_ETT_minute):
+    """
+    ETT(minute)データセットの各特徴量（変数）ごとに系列を抽出するCI（Channel-Individual）拡張クラス。
+    - 通常のDataset_ETT_minuteの系列抽出を特徴量ごとに分割して返す。
+    - __getitem__で指定特徴量のみの系列を返す。
+    - __len__は特徴量数倍となる。
+    """
     def __init__(self, root_path, *args, **kwargs):
         super().__init__(root_path, *args, **kwargs)
         self.enc_in = self.data_x.shape[-1]
@@ -395,6 +459,12 @@ class Dataset_ETT_minute_CI(Dataset_ETT_minute):
 
 
 class Dataset_Custom_CI(Dataset_Custom):
+    """
+    カスタムデータセットの各特徴量（変数）ごとに系列を抽出するCI（Channel-Individual）拡張クラス。
+    - 通常のDataset_Customの系列抽出を特徴量ごとに分割して返す。
+    - __getitem__で指定特徴量のみの系列を返す。
+    - __len__は特徴量数倍となる。
+    """
     def __init__(self, root_path, *args, **kwargs):
         super().__init__(root_path, *args, **kwargs)
         self.enc_in = self.data_x.shape[-1]
@@ -419,6 +489,13 @@ class Dataset_Custom_CI(Dataset_Custom):
 
 
 class Dataset_Recent(Dataset):
+    """
+    直近系列情報を活用するためのラッパーデータセットクラス。
+    - あるインデックスのデータと、その直近recent_num個分のデータを同時に返す。
+    - gapで系列間の間隔を指定可能。
+    - strengthを指定すると時系列データに周期的な変動を加えることも可能。
+    - __getitem__で(現在データ, 直近データ)または(直近データ, 現在データ)のタプルを返す。
+    """
     def __init__(self, dataset, gap: Union[int, tuple, list], recent_num=1, take_post=0, strength=0, **kwargs):
         super().__init__()
         self.more = gap - recent_num + 1
@@ -437,21 +514,51 @@ class Dataset_Recent(Dataset):
             return torch.stack(data, 0)
 
     def __getitem__(self, index):
+        """
+        指定インデックスのデータと、その直近系列データを返す。
+        - recent_num=1の場合: (indexのデータ, index+gapのデータ)のタプルを返す。
+        - recent_num>1の場合:
+            ・current_data: index+gap+recent_num-1のデータ
+            ・recent_data: indexからindex+recent_num-1までの直近系列をまとめて返す。
+            ・current_dataがタプルでなければ(recent_data, current_data)のタプル。
+            ・current_dataがタプルの場合は、各要素ごとに直近系列をまとめて返す。
+        - 直近系列はtorch.stackやnp.vstackでまとめてテンソル化される。
+        - オンライン学習では，recent_dataで学習し，current_dataで検証する．
+        """
         if self.recent_num == 1:
+            # recent_num=1の場合：単純に現在のデータとgap分先のデータを返す
+            # 
             return self.dataset[index], self.dataset[index + self.gap]
         else:
+            # recent_num>1の場合：複数の直近系列をまとめて返す
+            # current_data: 予測対象となるデータ（gap+recent_num-1分先のデータ）
             current_data = self.dataset[index + self.gap + self.recent_num - 1]
+
             if not isinstance(current_data, tuple):
+                # current_dataがタプルでない場合（単一のテンソル/配列）
+                # indexからindex+recent_num-1までの直近系列を取得
                 recent_data = tuple(self.dataset[index + n] for n in range(self.recent_num))
+                # 直近系列をまとめてテンソル化（_stackでtorch.stackまたはnp.vstack）
                 recent_data = self._stack(recent_data)
+                # (current_data, recent_data)のタプルを返す
                 return current_data, recent_data
             else:
+                # current_dataがタプルの場合（複数の要素を持つ）
+                # 各要素に対応する空のリストを作成
                 recent_data = tuple([] for _ in range(len(current_data)))
+
+                # 直近系列の各時点について
                 for past in range(self.recent_num):
-                    for j, past_data in enumerate(self.dataset[index + past]):
+                    # index+pastのデータを取得
+                    past_data_tuple = self.dataset[index + past]
+                    # 各要素（seq_x, seq_y, seq_x_mark, seq_y_markなど）を対応するリストに追加
+                    for j, past_data in enumerate(past_data_tuple):
                         recent_data[j].append(past_data)
+
+                # 各要素の直近系列をまとめてテンソル化
                 recent_data = tuple(self._stack(recent_d) for recent_d in recent_data)
-            return recent_data, current_data
+                # (recent_data, current_data)のタプルを返す
+                return recent_data, current_data
 
     def __len__(self):
         return len(self.dataset) - self.more

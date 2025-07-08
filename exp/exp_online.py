@@ -5,24 +5,18 @@ Exp_Mainを継承してオンライン学習特有の処理を実装
 """
 
 import copy
-import numpy as np
 from tqdm import tqdm
-import os
 import time
 import warnings
 
 import torch
-import torch.nn.functional as F
-from torch import optim, nn
 import torch.distributed as dist
 
 from data_provider.data_factory import data_provider, get_dataset, get_dataloader
 from data_provider.data_loader import Dataset_Recent
 from exp.exp_main import Exp_Main
-from util.buffer import Buffer
 from util.metrics import metric, update_metrics, calculate_metrics
 from util.tools import test_params_flop
-from models.OneNet import OneNet, Model_Ensemble
 
 
 
@@ -34,7 +28,23 @@ transformers = ['Autoformer', 'Transformer', 'Informer']
 # オンライン学習の基底クラス
 # =============================
 class Exp_Online(Exp_Main):
+    """
+    オンライン時系列予測実験の基底クラス
+    Exp_Mainを継承し、オンライン学習特有の処理を実装
+    train()はExp_Mainから継承する，主にvaliやtestにおけるオンライン学習の実装
+
+    主な機能：
+    - オンライン学習フェーズ（test, online）でのデータ取得
+    - 情報リークあり/なしのオンライン学習
+    - 逐次的なモデル更新
+    - オンライン学習の性能評価
+    """
     def __init__(self, args):
+        """
+        初期化処理
+        - オンライン学習フェーズの設定
+        - 逐次学習用のデータ取得設定
+        """
         super().__init__(args)
         # オンライン学習で使うフェーズ名
         self.online_phases = ['test', 'online']
@@ -42,6 +52,12 @@ class Exp_Online(Exp_Main):
         self.wrap_data_kwargs.update(recent_num=1, gap=self.args.pred_len)
 
     def _get_data(self, flag, **kwargs):
+        """
+        オンライン学習フェーズの場合のデータ取得
+        - flag: データセットの種類（'train', 'val', 'test', 'online'）
+        - leakage=True: 情報リークあり（未来の正解を使って即時更新）
+        - leakage=False: 情報リークなし（正しいタイミングでのみ更新）
+        """
         # オンライン学習フェーズの場合のデータ取得
         if flag in self.online_phases:
             # 情報リークあり（leakage=True）の場合
@@ -51,9 +67,7 @@ class Exp_Online(Exp_Main):
                 data_loader = get_dataloader(data_set, self.args, 'online' if flag == 'test' else 'test')
             else:
                 # 情報リークなし（正しいタイミングでのみ更新）
-                data_set = get_dataset(self.args, flag, self.device,
-                                       wrap_class=self.args.wrap_data_class + [Dataset_Recent],
-                                       **self.wrap_data_kwargs, **kwargs)
+                data_set = get_dataset(self.args, flag, self.device, wrap_class=self.args.wrap_data_class + [Dataset_Recent], **self.wrap_data_kwargs, **kwargs)
                 data_loader = get_dataloader(data_set, self.args, 'online')
             return data_set, data_loader
         else:
@@ -61,6 +75,11 @@ class Exp_Online(Exp_Main):
             return super()._get_data(flag, **kwargs)
 
     def vali(self, vali_data, vali_loader, criterion):
+        """
+        バリデーション処理
+        - 情報リークあり or valフェーズがオンラインでない場合は通常のバリデーション
+        - 情報リークなしの場合はオンラインバリデーション
+        """
         self.phase = 'val'
         # 情報リークあり or valフェーズがオンラインでない場合は通常のバリデーション
         if self.args.leakage or 'val' not in self.online_phases:
@@ -81,39 +100,33 @@ class Exp_Online(Exp_Main):
         return mse
 
     def update_valid(self, valid_data=None):
+        """
+        バリデーションデータでのオンライン更新
+        - 情報リークあり/なしで処理を分岐
+        - 逐次的にモデルを更新
+        """
         self.phase = 'online'
-
         # =============================
         # 情報リークあり（leakage=True）の場合
         # =============================
         if hasattr(self.args, 'leakage') and self.args.leakage:
-            if self.args.model == 'PatchTST':
-                # PatchTST用の情報リークバリデーション
-                valid_data = get_dataset(self.args, 'val', self.device,
-                                         wrap_class=self.args.wrap_data_class + [Dataset_Recent],
-                                         take_post=self.args.pred_len - 1, **self.wrap_data_kwargs)
-                self.online_information_leakage_PatchTST(valid_data, None, 'online', True)
-            else:
-                # その他モデル用の情報リークバリデーション
-                valid_data = get_dataset(self.args, 'val', self.device, wrap_class=self.args.wrap_data_class,
-                                         take_pre=True, take_post=self.args.pred_len - 1, **self.wrap_data_kwargs)
-                self.online_information_leakage(valid_data, None, 'online', True)
+            valid_data = get_dataset(self.args, 'val', self.device, wrap_class=self.args.wrap_data_class, take_pre=True, take_post=self.args.pred_len - 1, **self.wrap_data_kwargs)
+            self.online_information_leakage(valid_data, None, 'online', True)
             return []
 
         # =============================
         # 情報リークなし（leakage=False）の場合
         # =============================
         if valid_data is None or not isinstance(valid_data, Dataset_Recent):
-            valid_data = get_dataset(self.args, 'val', self.device,
-                                     wrap_class=self.args.wrap_data_class + [Dataset_Recent],
-                                     take_post=self.args.pred_len - 1, **self.wrap_data_kwargs)
-        valid_loader = get_dataloader(valid_data, self.args, 'online')
+            valid_data = get_dataset(self.args, 'val', self.device, wrap_class=self.args.wrap_data_class + [Dataset_Recent], take_post=self.args.pred_len - 1, **self.wrap_data_kwargs)
+        valid_loader = get_dataloader(valid_data, self.args, flag='online')
+
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
         scaler = torch.cuda.amp.GradScaler() if self.args.use_amp else None
-        self.model.train()
         predictions = []
         for i, (recent_batch, current_batch) in enumerate(tqdm(valid_loader, mininterval=10)):
+            self.model.train()
             # 逐次的にモデルをオンライン更新
             self._update_online(recent_batch, criterion, model_optim, scaler)
             if self.args.do_predict:
@@ -123,102 +136,89 @@ class Exp_Online(Exp_Main):
                 if isinstance(outputs, (tuple, list)):
                     outputs = outputs[0]
                 predictions.append(outputs.detach().cpu().numpy())
-                self.model.train()
         return predictions
 
     def _update_online(self, batch, criterion, optimizer, scaler=None):
-        # オンライン学習1ステップ分のパラメータ更新処理
+        """
+        オンライン学習1ステップ分のパラメータ更新処理
+        - 通常のバッチ処理または逐次処理に対応
+        - 複数オプティマイザーにも対応
+        - batch: 入力データ（通常は[seq_x, seq_y, ...]のリストやタプル）
+        - criterion: 損失関数
+        - optimizer: オプティマイザー（またはそのタプル）
+        - scaler: AMP用スケーラー（省略可）
+        戻り値: (loss, outputs)
+        """
+        # バッチの最初の要素が3次元（通常のバッチ）なら通常の_updateを呼ぶ
         if batch[0].dim() == 3:
+            # 通常のバッチ学習（複数系列をまとめて一度に更新）
             return self._update(batch, criterion, optimizer, scaler)
         else:
-            batch = [b[0] for b in batch]
-            if not isinstance(optimizer, tuple):
-                optimizer = (optimizer,)
-            for optim in optimizer:
-                optim.zero_grad()
-            outputs = self.forward(batch)
-            batch_y = batch[1]
-            if not self.args.pin_gpu:
-                batch_y = batch_y.to(self.device)
-            if isinstance(outputs, (tuple, list)):
-                outputs = outputs[0]
-            loss = 0
-            H = batch_y.shape[1]
-            for i in range(H):
-                loss += criterion(outputs[i, :H-i], batch_y[i, :H-i])
-            if self.args.use_amp:
-                scaler.scale(loss).backward()
-                for optim in optimizer:
-                    scaler.step(optim)
-                scaler.update()
-            else:
-                loss.backward()
-                for optim in optimizer:
-                    optim.step()
-            return loss, outputs
+            #　使わないと思ったから消した．必要なら元のコードを復活させる
+            warnings.warn("逐次処理は未実装")
+            exit()
 
     def online(self, online_data=None, target_variate=None, phase='test', show_progress=False):
-        # =============================
-        # オンライン学習のメインループ
-        # =============================
+        """
+        オンライン学習のメインループ
+        - 情報リークあり/なしで処理を分岐
+        - 逐次的にモデルを更新しながら予測
+        - 性能指標（MSE, MAE）を計算
+        - online_data: オンライン学習用データセット（省略時は自動生成）
+        - target_variate: 評価対象変数（省略可）
+        - phase: 'test' or 'val' or 'online' など
+        - show_progress: tqdmによる進捗表示
+        戻り値: (mse, mae, online_data, [predictions])
+        """
         self.phase = phase
-        # 情報リークありの場合は専用メソッドへ分岐
+        # =============================
+        # 情報リークあり（leakage=True）の場合
+        # =============================
         if hasattr(self.args, 'leakage') and self.args.leakage:
-            if self.args.model == 'PatchTST':
-                return self.online_information_leakage_PatchTST(online_data, target_variate, phase, show_progress)
-            else:
-                return self.online_information_leakage(online_data, target_variate, phase, show_progress)
-        # 情報リークなしの場合は通常のオンライン学習
+            online_data = get_dataset(self.args, phase, self.device, wrap_class=self.args.wrap_data_class, **self.wrap_data_kwargs)
+            return self.online_information_leakage(online_data, target_variate, phase, show_progress)
+
+        # =============================
+        # 情報リークなし（leakage=False）の場合
+        # =============================
+        # データセットが未指定なら自動生成
         if online_data is None:
-            online_data = get_dataset(self.args, phase, self.device,
-                                      wrap_class=self.args.wrap_data_class + [Dataset_Recent],
-                                      **self.wrap_data_kwargs)
+            online_data = get_dataset(self.args, phase, self.device, wrap_class=self.args.wrap_data_class + [Dataset_Recent], **self.wrap_data_kwargs)
+        # DataLoaderを取得
         online_loader = get_dataloader(online_data, self.args, flag='online')
 
         if self.args.do_predict:
-            predictions = []
+            predictions = []  # 予測結果を格納
+        # 性能指標の累積用辞書
         statistics = {k: 0 for k in ['total', 'y_sum', 'MSE', 'MAE']}
 
+        # オプティマイザー・損失関数・AMPスケーラーを準備
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
         scaler = torch.cuda.amp.GradScaler() if self.args.use_amp else None
 
-        if phase == 'test' and hasattr(self.args, 'debug') and self.args.debug:
-            # デバッグ用のTensorBoard出力
-            import tensorboardX as tensorboard
-            import shutil
-            log_dir = f'run/{self.args.online_method}_{self.args.dataset}_{self.args.seq_len}_{self.args.pred_len}_' \
-                      f'{self.args.learning_rate}_{self.args.online_learning_rate}_{self.args.trigger_threshold}_' \
-                      f'{self.args.tune_mode}_' \
-                      f'{self.args.bottleneck_dim}_{self.args.penalty}_{self.args.comment}/' \
-                      f'{time.strftime("%Y%m%d%H%M", time.localtime())}'
-            print(log_dir)
-            if os.path.exists(log_dir):
-                shutil.rmtree(log_dir)
-            self.writer = tensorboard.SummaryWriter(log_dir=log_dir)
-
-        if phase == 'test' or show_progress:
+        # 進捗表示（tqdmで進捗バー表示）
+        if show_progress:
             online_loader = tqdm(online_loader, mininterval=10)
+        # オンライン学習のメインループ
         for i, (recent_data, current_data) in enumerate(online_loader):
-            self.model.train()
-            # 逐次的にモデルをオンライン更新
-            loss, _ = self._update_online(recent_data, criterion, model_optim, scaler)
-            self.model.eval()
+            self.model.train()  # モデルを訓練モードに
+            # 逐次的にモデルをオンライン更新（recent_dataでパラメータ更新）
+            self._update_online(recent_data, criterion, model_optim, scaler)
+            self.model.eval()  # モデルを推論モードに
             with torch.no_grad():
+                # current_dataで予測
                 outputs = self.forward(current_data)
                 if self.args.do_predict:
+                    # 予測結果を保存
                     if isinstance(outputs, (tuple, list)):
                         outputs = outputs[0]
                     predictions.append(outputs.detach().cpu().numpy())
+                # 性能指標（MSE, MAEなど）を更新 #label_position=1（これはどういう意味なのか？）
                 update_metrics(outputs, current_data[self.label_position].to(self.device), statistics, target_variate)
 
-                if phase == 'test' and hasattr(self.args, 'debug') and self.args.debug:
-                    if isinstance(outputs, (tuple, list)):
-                        outputs = outputs[0]
-                    mse = F.mse_loss(outputs, current_data[self.label_position].to(self.device))
-                    self.writer.add_scalar('Online/MSE', mse, i)
-                    self.writer.add_scalar('Online/avg_MSE', statistics['MSE'] / statistics['total'], i)
 
+        # 全サンプルの性能指標を集計
         metrics = calculate_metrics(statistics)
         mse, mae = metrics['MSE'], metrics['MAE']
         if phase == 'test':
@@ -230,73 +230,57 @@ class Exp_Online(Exp_Main):
 
     # --- 以下、情報リークありのオンライン学習用メソッド ---
     def online_information_leakage(self, online_data=None, target_variate=None, phase='test', show_progress=False):
-        # 情報リークあり：予測直後に正解値で即時更新
+        """
+        情報リークあり：予測直後に正解値で即時更新
+        - 現実的には不可能だが、理論的な性能上限を測るための実験
+        - 予測直後に正解値を使って即座にモデルを更新する
+        - online_data: オンライン学習用データセット（省略時は自動生成）
+        - target_variate: 評価対象変数（省略可）
+        - phase: 'test' or 'val' or 'online' など
+        - show_progress: tqdmによる進捗表示
+        戻り値: (mse, mae, online_data, [predictions])
+        """
+        # データセットが未指定なら自動生成
         if online_data is None:
-            online_data = get_dataset(self.args, phase, self.device, wrap_class=self.args.wrap_data_class,
-                                      **self.wrap_data_kwargs)
+            online_data = get_dataset(self.args, phase, self.device, wrap_class=self.args.wrap_data_class, **self.wrap_data_kwargs)
+        # DataLoaderを取得
         online_loader = get_dataloader(online_data, self.args, flag='online')
 
         if self.args.do_predict:
-            predictions = []
-
+            predictions = []  # 予測結果を格納
+        # 性能指標の累積用辞書
         statistics = {k: 0 for k in ['total', 'y_sum', 'MSE', 'MAE']}
+
+        # オプティマイザー・損失関数・AMPスケーラーを準備
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
         scaler = torch.cuda.amp.GradScaler() if self.args.use_amp else None
 
-        if phase == 'test' or show_progress:
+        # 進捗表示（tqdmで進捗バー表示）
+        if show_progress:
             online_loader = tqdm(online_loader, mininterval=10)
-        self.model.train()
+
+        # オンライン学習のメインループ
         for i, current_data in enumerate(online_loader):
-            # 予測直後に正解値で即時更新（情報リーク）
-            loss, outputs = self._update_online(current_data, criterion, model_optim, scaler)
-            with torch.no_grad():
-                update_metrics(outputs, current_data[self.label_position].to(self.device), statistics, target_variate)
-            if self.args.do_predict:
-                if isinstance(outputs, (tuple, list)):
-                    outputs = outputs[0]
-                predictions.append(outputs.detach().cpu().numpy())
-
-        metrics = calculate_metrics(statistics)
-        mse, mae = metrics['MSE'], metrics['MAE']
-        if phase == 'test':
-            print('mse:{}, mae:{}'.format(mse, mae))
-        if self.args.do_predict:
-            return mse, mae, online_data, predictions
-        else:
-            return mse, mae, online_data
-
-    def online_information_leakage_PatchTST(self, online_data=None, target_variate=None, phase='test', show_progress=False):
-        # PatchTST用の情報リークありオンライン学習
-        self.phase = phase
-        if online_data is None:
-            online_data = get_dataset(self.args, phase, self.device, wrap_class=self.args.wrap_data_class + [Dataset_Recent],
-                                      **self.wrap_data_kwargs)
-        online_loader = get_dataloader(online_data, self.args, flag='online')
-
-        if self.args.do_predict:
-            predictions = []
-        statistics = {k: 0 for k in ['total', 'y_sum', 'MSE', 'MAE']}
-
-        model_optim = self._select_optimizer()
-        criterion = self._select_criterion()
-        scaler = torch.cuda.amp.GradScaler() if self.args.use_amp else None
-
-        if phase == 'test' or show_progress:
-            online_loader = tqdm(online_loader, mininterval=10)
-        for i, (recent_data, current_data) in enumerate(online_loader):
-            self.model.train()
-            with torch.no_grad():
-                outputs = self.forward(recent_data)
-            self.model.eval()
-            # 予測直後に正解値で即時更新（情報リーク）
-            loss, outputs = self._update_online(current_data, criterion, model_optim, scaler)
-            if self.args.do_predict:
-                if isinstance(outputs, (tuple, list)):
-                    outputs = outputs[0]
-                predictions.append(outputs.detach().cpu().numpy())
+            # PatchTSTなどdropoutが重要な場合は無効化して予測する
+            if self.args.model == 'PatchTST':
+                # online学習でbackwardするときはevalにしてdropoutを無効化した方がいい．
+                self.model.eval()  # モデルを推論モードに
+                # 予測直後に正解値で即時更新（情報リーク）
+                loss, outputs = self._update_online(current_data, criterion, model_optim, scaler)
+            else:
+                self.model.train()  # モデルを訓練モードに
+                # 予測直後に正解値で即時更新（情報リーク）
+                loss, outputs = self._update_online(current_data, criterion, model_optim, scaler)
+            # 性能指標（MSE, MAEなど）を更新
             update_metrics(outputs, current_data[self.label_position].to(self.device), statistics, target_variate)
+            if self.args.do_predict:
+                # 予測結果を保存
+                if isinstance(outputs, (tuple, list)):
+                    outputs = outputs[0]
+                predictions.append(outputs.detach().cpu().numpy())
 
+        # 全サンプルの性能指標を集計
         metrics = calculate_metrics(statistics)
         mse, mae = metrics['MSE'], metrics['MAE']
         if phase == 'test':
@@ -307,229 +291,58 @@ class Exp_Online(Exp_Main):
             return mse, mae, online_data
 
     def analysis_online(self):
+        """
+        オンライン学習の推論・更新時間計測用
+        - 推論時間と更新時間を計測
+        - GPUメモリ使用量も確認
+        - モデルの計算量（FLOPs）も測定
+        """
         # オンライン学習の推論・更新時間計測用
         online_data = get_dataset(self.args, 'test', self.device, wrap_class=self.args.wrap_data_class + [Dataset_Recent],
                                   **self.wrap_data_kwargs)
+        # DataLoaderを取得
         online_loader = get_dataloader(online_data, self.args, flag='online')
+        # オプティマイザー・損失関数・AMPスケーラーを準備
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
         scaler = torch.cuda.amp.GradScaler() if self.args.use_amp else None
 
-        times_update = []
-        times_infer = []
+        times_update = []  # 更新時間の記録リスト
+        times_infer = []   # 推論時間の記録リスト
         print('GPU Mem:', torch.cuda.max_memory_allocated())
+        # オンライン学習のメインループ
         for i, (recent_data, current_data) in enumerate(online_loader):
             start_time = time.time()
-            self.model.train()
+            self.model.train()  # モデルを訓練モードに
+            # recent_dataをデバイスに転送
             recent_data = [d.to(self.device) for d in recent_data]
+            # オンライン更新（パラメータ更新）
             loss, _ = self._update_online(recent_data, criterion, model_optim, scaler)
             if i > 10:
+                # 10イテレーション目以降の更新時間を記録
                 times_update.append(time.time() - start_time)
-            self.model.eval()
+            self.model.eval()  # モデルを推論モードに
             with torch.no_grad():
                 start_time = time.time()
+                # current_dataをデバイスに転送
                 current_data = [d.to(self.device) for d in current_data]
+                # 推論のみ実行
                 self.forward(current_data)
             if i > 10:
+                # 10イテレーション目以降の推論時間を記録
                 times_infer.append(time.time() - start_time)
             if i == 50:
+                # 50イテレーションで打ち切り
                 break
         print('Final GPU Mem:', torch.cuda.max_memory_allocated())
+        # 最小・最大値を除いた平均更新時間・推論時間を計算
         times_update = (sum(times_update) - min(times_update) - max(times_update)) / (len(times_update) - 2)
         times_infer = (sum(times_infer) - min(times_infer) - max(times_infer)) / (len(times_infer) - 2)
         print('Update Time:', times_update)
         print('Infer Time:', times_infer)
         print('Latency:', times_update + times_infer)
+        # モデルのFLOPs（計算量）を測定
         test_params_flop(self.model, (1, self.args.seq_len, self.args.enc_in))
 
 
-class Exp_ER(Exp_Online):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.buffer = Buffer(500, self.device)
-        self.count = 0
-
-    def train_loss(self, criterion, batch, outputs):
-        loss = super().train_loss(criterion, batch, outputs)
-        if not self.buffer.is_empty():
-            buff = self.buffer.get_data(8)
-            out = self.forward(buff[:-1])
-            if isinstance(outputs, (tuple, list)):
-                out = out[0]
-            loss += 0.2 * criterion(out, buff[1])
-        return loss
-
-    def _update_online(self, batch, criterion, optimizer, scaler=None):
-        loss, outputs = self._update(batch, criterion, optimizer, scaler=None)
-        idx = self.count + torch.arange(batch[1].size(0)).to(self.device)
-        self.count += batch[1].size(0)
-        self.buffer.add_data(*(batch + (idx,)))
-        return loss, outputs
-
-
-class Exp_DERpp(Exp_ER):
-
-    def train_loss(self, criterion, batch, outputs):
-        loss = Exp_Online.train_loss(self, criterion, batch, outputs)
-        if not self.buffer.is_empty():
-            buff = self.buffer.get_data(8)
-            out = self.forward(buff[:-1])
-            if isinstance(outputs, (tuple, list)):
-                out = out[0]
-            loss += 0.2 * criterion(buff[-1], out)
-        return loss
-
-    def _update_online(self, batch, criterion, optimizer, scaler=None):
-        loss, outputs = Exp_Online._update_online(self, batch, criterion, optimizer, scaler)
-        self.count += batch[1].size(0)
-        if isinstance(outputs, (tuple, list)):
-            self.buffer.add_data(*(batch + [outputs[0]]))
-        else:
-            self.buffer.add_data(*(batch + [outputs]))
-        return loss, outputs
-
-
-class Exp_FSNet(Exp_Online):
-    def __init__(self, args):
-        super().__init__(args)
-
-    def _update(self, *args, **kwargs):
-        ret = super()._update(*args, **kwargs)
-        if hasattr(self.model, 'store_grad'):
-            self.model.store_grad()
-        return ret
-
-    def vali(self, *args, **kwargs):
-        if not hasattr(self.model, 'try_trigger_'):
-            return super().vali(*args, **kwargs)
-        else:
-            self.model.try_trigger_(True)
-            ret = super().vali(*args, **kwargs)
-            self.model.try_trigger_(False)
-            return ret
-
-    def online(self, *args, **kwargs):
-        if not hasattr(self.model, 'try_trigger_'):
-            return super().online(*args, **kwargs)
-        else:
-            self.model.try_trigger_(True)
-            ret = super().online(*args, **kwargs)
-            self.model.try_trigger_(False)
-            return ret
-
-    def analysis_online(self):
-        if hasattr(self.model, 'try_trigger_'):
-            self.model.try_trigger_(True)
-        return super().analysis_online()
-
-
-class Exp_OneNet(Exp_FSNet):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.opt_w = optim.Adam([self.model.weight], lr=self.args.learning_rate_w)
-        self.opt_bias = optim.Adam(self.model.decision.parameters(), lr=self.args.learning_rate_bias)
-        self.bias = torch.zeros(self.args.enc_in, device=self.model.weight.device)
-
-    def _select_optimizer(self, filter_frozen=True, return_self=True, model=None):
-        if model is None or isinstance(model, OneNet):
-            return super()._select_optimizer(filter_frozen, return_self, model=self.model.backbone)
-        return super()._select_optimizer(filter_frozen, return_self, model=model)
-
-    def state_dict(self, *args, **kwargs):
-        destination = super().state_dict(*args, **kwargs)
-        destination['opt_w'] = self.opt_w.state_dict()
-        destination['opt_bias'] = self.opt_bias.state_dict()
-        return destination
-
-    # def load_state_dict(self, state_dict, model=None):
-    #     self.model.bias.data = state_dict['model']['bias']
-    #     return super().load_state_dict(state_dict, model)
-
-    def _build_model(self, model=None, framework_class=None):
-        if self.args.model not in ['TCN', 'FSNet', 'TCN_Ensemble', 'FSNet_Ensemble']:
-            framework_class = [Model_Ensemble, OneNet]
-        else:
-            framework_class = OneNet
-        return super()._build_model(model, framework_class=framework_class)
-
-    def train_loss(self, criterion, batch, outputs):
-        return super().train_loss(criterion, batch, outputs[1]) + super().train_loss(criterion, batch, outputs[2])
-
-    def vali(self, vali_data, vali_loader, criterion):
-        self.bias = torch.zeros(self.args.enc_in, device=self.model.weight.device)
-        ret = super().vali(vali_data, vali_loader, criterion)
-        self.phase = None
-        return ret
-
-    def update_valid(self, valid_data=None):
-        self.bias = torch.zeros(self.args.enc_in, device=self.model.weight.device)
-        return super().update_valid(valid_data)
-
-    def forward(self, batch):
-        b, t, d = batch[1].shape
-        if hasattr(self, 'phase') and self.phase in self.online_phases:
-            weight = self.model.weight.view(1, 1, -1).repeat(b, t, 1)
-            bias = self.bias.view(-1, 1, d)
-            loss1 = F.sigmoid(weight + bias.repeat(1, t, 1)).view(b, t, d)
-        else:
-            loss1 = F.sigmoid(self.model.weight).view(1, 1, -1)
-            loss1 = loss1.repeat(b, t, 1)
-        batch = batch + [loss1, 1 - loss1]
-        return super().forward(batch)
-
-    def _update(self, batch, criterion, optimizer, scaler=None):
-        batch_y = batch[1]
-        b, t, d = batch_y.shape
-
-        loss, (outputs, y1, y2) = super()._update(batch, criterion, optimizer, scaler)
-
-        loss_w = criterion(outputs, batch_y)
-        loss_w.backward()
-        self.opt_w.step()
-        self.opt_w.zero_grad()
-
-        y1_w, y2_w = y1.detach(), y2.detach()
-        true_w = batch_y.detach()
-        loss1 = F.sigmoid(self.model.weight).view(1, 1, -1)
-        loss1 = loss1.repeat(b, t, 1)
-        inputs_decision = torch.cat([loss1 * y1_w, (1 - loss1) * y2_w, true_w], dim=1)
-        bias = self.model.decision(inputs_decision.permute(0, 2, 1)).view(b, 1, -1)
-        weight = self.model.weight.view(1, 1, -1).repeat(b, t, 1)
-        loss1 = F.sigmoid(weight + bias.repeat(1, t, 1))
-        loss2 = 1 - loss1
-        loss_bias = criterion(loss1 * y1_w + loss2 * y2_w, true_w)
-        loss_bias.backward()
-        self.opt_bias.step()
-        self.opt_bias.zero_grad()
-
-        return loss / 2, outputs
-
-    def _update_online(self, batch, criterion, optimizer, scaler=None):
-        batch_y = batch[1]
-        b, t, d = batch_y.shape
-
-        loss, (outputs, y1, y2) = super()._update(batch, criterion, optimizer, scaler)
-
-        y1_w, y2_w = y1.detach(), y2.detach()
-        loss1 = F.sigmoid(self.model.weight).view(1, 1, -1).repeat(b, t, 1)
-        inputs_decision = torch.cat([loss1 * y1_w, (1 - loss1) * y2_w, batch_y], dim=1)
-        self.bias = self.model.decision(inputs_decision.permute(0, 2, 1))
-        weight = self.model.weight.view(1, 1, -1).repeat(b, t, 1)
-        bias = self.bias.view(b, 1, -1)
-        loss1 = F.sigmoid(weight + bias.repeat(1, t, 1))
-        loss2 = 1 - loss1
-
-        outputs_bias = loss1 * y1_w + loss2 * y2_w
-        loss_bias = criterion(outputs_bias, batch_y)
-        loss_bias.backward()
-        self.opt_bias.step()
-        self.opt_bias.zero_grad()
-
-        loss1 = F.sigmoid(self.model.weight).view(1, 1, -1)
-        loss1 = loss1.repeat(b, t, 1)
-        loss_w = criterion(loss1 * y1_w + (1 - loss1) * y2_w, batch_y)
-        loss_w.backward()
-        self.opt_w.step()
-        self.opt_w.zero_grad()
-        return loss / 2, outputs
 

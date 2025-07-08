@@ -11,22 +11,22 @@ data=ETTm1
 model_name=iTransformer
 online_method=SOLID
 
-for test_train_num in 2000
+for buffer_size in 2000
 do
-for selected_data_num in 20
+for mini_batch in 20
 do
 for pred_len in 24 48 96
 do
 for online_learning_rate in 0.000003
 do
-  filename=logs/online/$model_name'_'$online_method'whole_cont_'$data'_'$pred_len'_N'$test_train_num'_n'$selected_data_num'_onlinelr'$online_learning_rate.log
+  filename=logs/online/$model_name'_'$online_method'whole_cont_'$data'_'$pred_len'_N'$buffer_size'_n'$mini_batch'_onlinelr'$online_learning_rate.log
   python -u run.py \
     --dataset $data --border_type 'online' \
     --model $model_name \
     --seq_len $seq_len \
     --pred_len $pred_len \
     --itr 3 --skip $filename --online_method $online_method --whole_model --continual \
-    --only_test --test_train_num $test_train_num --selected_data_num $selected_data_num \
+    --only_test --buffer_size $buffer_size --mini_batch $mini_batch \
     --online_learning_rate $online_learning_rate >> $filename 2>&1
 done
 done
