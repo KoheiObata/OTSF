@@ -163,3 +163,4 @@ cython_debug/
 /dataset/*.csv
 
 results/*
+.python-version
