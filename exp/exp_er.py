@@ -6,59 +6,60 @@ from util.buffer import Buffer
 
 class Exp_ER(Exp_Online):
     """
-    Experience Replay（経験再生）を実装したオンライン学習クラス
-    - 過去のデータをバッファに保存し、忘れることを防ぐ
-    - バッファサイズ500で過去データを管理
+    Online learning class implementing Experience Replay
+    - Store past data in buffer to prevent forgetting
+    - buffer_size determines number of past data, mini_batch determines number of data retrieved from buffer
+    - ER_alpha determines weight of loss from past data in buffer
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.buffer = Buffer(self.args.buffer_size, self.device)
         self.count = 0
-        self.alpha = 0.2
+        self.alpha = self.args.ER_alpha
 
     def train_loss(self, criterion, batch, outputs):
         """
-        経験再生を含む損失計算
-        - 通常の損失に加えて、バッファからの過去データでの損失も追加
+        Loss calculation including experience replay
+        - Add loss from past data in buffer to normal loss
         """
         loss = super().train_loss(criterion, batch, outputs)
         if not self.buffer.is_empty():
-            buff = self.buffer.get_data(self.args.mini_batch)  # バッファからmini_batch個のサンプル取得
-            # buff[0]は入力データ、buff[1]はラベルデータ, buff[2]は入力の時間特徴量，buff[3]は出力の時間特徴量
-            out = self.forward(buff[:-1])   # buff[:-1]は「最後の属性（インデックス）を除いたデータ」
+            buff = self.buffer.get_data(self.args.mini_batch)  # Get mini_batch samples from buffer
+            # buff[0] is input data, buff[1] is label data, buff[2] is input time features, buff[3] is output time features
+            out = self.forward(buff[:-1])   # buff[:-1] is "data excluding last attribute (index)"
             if isinstance(outputs, (tuple, list)):
                 out = out[0]
-            loss += self.alpha * criterion(out, buff[1])  # バッファデータでの損失を0.2倍で追加
+            loss += self.alpha * criterion(out, buff[1])  # Add buffer data loss scaled by 0.2
         return loss
 
-    def _update_online(self, batch, criterion, optimizer, scaler=None):
+    def _update_online(self, batch, criterion, optimizer, scaler=None, current_batch=None):
         """
-        オンライン更新時にバッファにデータを追加
+        Add data to buffer during online update
         """
         loss, outputs = self._update(batch, criterion, optimizer, scaler)
         idx = self.count + torch.arange(batch[1].size(0)).to(self.device)
         self.count += batch[1].size(0)
-        self.buffer.add_data(*batch, idx)  # バッファにデータとインデックスを追加
+        self.buffer.add_data(*batch[:4], idx)  # Add data and index to buffer
         return loss, outputs
 
 
 class Exp_DERpp(Exp_Online):
     """
-    Dark Experience Replay++（DER++）を実装したオンライン学習クラス
-    - ERを拡張し、より効果的な経験再生を実現
-    - 予測出力もバッファに保存して活用
+    Online learning class implementing Dark Experience Replay++ (DER++)
+    - Extends ER to achieve more effective experience replay
+    - Saves and utilizes prediction outputs in buffer
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.buffer = Buffer(self.args.buffer_size, self.device)
         self.count = 0
-        self.alpha = 0.2
-        self.beta = 0.2
+        self.alpha = self.args.ER_alpha
+        self.beta = self.args.ER_beta
 
     def train_loss(self, criterion, batch, outputs):
         """
-        DER++の損失計算
-        - 通常の損失に加えて、バッファからの予測出力での損失も追加
+        Loss calculation for DER++
+        - Add loss from prediction outputs in buffer to normal loss
         """
         loss = super().train_loss(criterion, batch, outputs)
         if not self.buffer.is_empty():
@@ -66,18 +67,18 @@ class Exp_DERpp(Exp_Online):
             out = self.forward(buff[:-1])
             if isinstance(outputs, (tuple, list)):
                 out = out[0]
-            loss += self.alpha * criterion(buff[1], out)  # 予測出力と，ラベルデータ，の損失を追加
-            loss += self.beta * criterion(buff[-1], out)  # 今のモデルの予測出力と，過去のモデルの予測出力，の損失を追加
+            loss += self.alpha * criterion(buff[1], out)  # Add loss between prediction output and label data
+            loss += self.beta * criterion(buff[-1], out)  # Add loss between current and past model prediction outputs
         return loss
 
-    def _update_online(self, batch, criterion, optimizer, scaler=None):
+    def _update_online(self, batch, criterion, optimizer, scaler=None, current_batch=None):
         """
-        オンライン更新時に予測出力もバッファに追加
+        Add prediction outputs to buffer during online update
         """
         loss, outputs = self._update(batch, criterion, optimizer, scaler)
         self.count += batch[1].size(0)
         if isinstance(outputs, (tuple, list)):
-            self.buffer.add_data(*(batch + [outputs[0]]))  # 予測出力もバッファに追加
+            self.buffer.add_data(*(batch + [outputs[0]]))  # Add prediction output to buffer
         else:
             self.buffer.add_data(*(batch + [outputs]))
         return loss, outputs

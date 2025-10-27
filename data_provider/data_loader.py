@@ -15,17 +15,47 @@ warnings.filterwarnings('ignore')
 
 def get_alldata(filename='electricity.csv', root_path='./'):
     """
-    指定されたファイル名とルートパスから時系列データを読み込み、
-    pandas.DataFrameとして返す関数。
-    - CSV, HDF5, NPZ, テキストなど複数のフォーマットに対応。
-    - windデータやnycデータなど、ファイル名に応じて日付カラムの生成や整形も行う。
-    - 最終的に'date'カラムが先頭になるように整形。
+    Function to load time series data from specified filename and root path,
+    and return it as pandas.DataFrame.
+    - Supports multiple formats including CSV, HDF5, NPZ, text, etc.
+    - Generates and formats date column according to filename (e.g., wind data, nyc data).
+    - Finally formats so 'date' column is at the front.
     """
     path = os.path.join(root_path, filename)
     if filename.endswith('.csv'):
-        df = pd.read_csv(path)
-        if filename.startswith('wind'):
-            df['date'] = pd.date_range(start='2000-01-01', periods=len(df), freq='H')
+        if filename in ['NOAA.csv', 'Powersupply.csv', 'AU_Electricity.csv']:
+            df = pd.read_csv(path, header=None)
+            df = df.drop(columns=df.columns[-1])
+            if filename.startswith('NOAA'):
+                df['date'] = pd.date_range(start='2016-01-01', periods=len(df), freq='D')
+            elif filename.startswith('Powersupply'):
+                df['date'] = pd.date_range(start='1995-01-01', periods=len(df), freq='H')
+            elif filename.startswith('AU_Electricity'):
+                df['date'] = pd.date_range(start='2016-01-01', periods=len(df), freq='5min')
+        elif filename=='electricityselect.csv':
+            filename = 'electricity.csv'
+            path = os.path.join(root_path, filename)
+            df = pd.read_csv(path)
+            select_cols = ['date', '46', '121', '310', '118', '119', '117', '178', '217', '147', '225']
+            df = df[select_cols]
+        elif filename=='trafficselect.csv':
+            filename = 'traffic.csv'
+            path = os.path.join(root_path, filename)
+            df = pd.read_csv(path)
+            select_cols = ['date', '448', '496', '353', '664', '445', '833', '571', '565', '106', '44']
+            df = df[select_cols]
+        elif filename=='ETTh2Select.csv':
+            filename = 'ETTh2.csv'
+            path = os.path.join(root_path, filename)
+            df = pd.read_csv(path)
+            select_cols = ['date', 'HUFL', 'HULL', 'MUFL', 'MULL', 'LUFL', 'OT']
+            df = df[select_cols]
+        else:
+            df = pd.read_csv(path)
+            if filename.startswith('wind'):
+                df['date'] = pd.date_range(start='2000-01-01', periods=len(df), freq='H')
+            elif filename in ['nsw_elc_price.csv', 'nsw_elc_demand.csv', 'synthetic_A3.csv', 'synthetic_B3.csv'] :
+                df['date'] = pd.date_range(start='2016-01-01', periods=len(df), freq='5min')
     else:
         if filename.startswith('nyc'):
             import h5py
@@ -54,71 +84,197 @@ def get_alldata(filename='electricity.csv', root_path='./'):
         df = df[[df.columns[-1]] + list(df.columns[:-1])]
     return df
 
+def get_borders_for_border_type(border_type, filename):
+    """
+    Function to set data boundaries for online learning
+
+    Args:
+        border_type: Type of boundary setting
+        filename: Data filename
+
+    Returns:
+        None: Sets boundary values in args.borders
+    """
+    borders, ratio = None, None
+
+
+    if border_type == 'offline':
+        flag2num = {'train': 0, 'valid': 1, 'test': 2}
+        if filename.startswith('ETTh'):
+            # Border settings for ETTh dataset (monthly units)
+            border1s = [0, 12*30*24, 16*30*24] # Start points for (train, val, test)
+            border2s = [12*30*24, 16*30*24, 20*30*24] # End points for (train, val, test)
+            borders = (border1s, border2s)
+        elif filename.startswith('ETTm'):
+            # Border settings for ETTm dataset (15-minute intervals, monthly units)
+            border1s = [0, 12*30*24*4, 16*30*24*4]
+            border2s = [12*30*24*4, 16*30*24*4, 20*30*24*4]
+            borders = (border1s, border2s)
+        else:
+            # Other datasets set by ratio
+            ratio = (0.6, 0.2, 0.2) # Ratio of training:validation:test data
+
+    elif border_type == 'online':
+        flag2num = {'train': 0, 'valid': 1, 'test': 2}
+        if filename.startswith('ETTh'):
+            border1s = [0, 4*30*24, 5*30*24]
+            border2s = [4*30*24, 5*30*24, 20*30*24]
+            borders = (border1s, border2s)
+        elif filename.startswith('ETTm'):
+            border1s = [0, 4*30*24*4, 5*30*24*4]
+            border2s = [4*30*24*4, 5*30*24*4, 20*30*24*4]
+            borders = (border1s, border2s)
+        else:
+            ratio = (0.2, 0.05, 0.75)
+
+    elif border_type == 'online3test':
+        flag2num = {'train': 0, 'valid': 1, 'test1': 2, 'test2': 3, 'test3': 4}
+        if filename.startswith('ETTh'):
+            border1s = [0, 4*30*24, 5*30*24, 10*30*24, 15*30*24]
+            border2s = [4*30*24, 5*30*24, 10*30*24, 15*30*24, 20*30*24]
+            borders = (border1s, border2s)
+        elif filename.startswith('ETTm'):
+            border1s = [0, 4*30*24*4, 5*30*24*4, 10*30*24*4, 15*30*24*4]
+            border2s = [4*30*24*4, 5*30*24*4, 10*30*24*4, 15*30*24*4, 20*30*24*4]
+            borders = (border1s, border2s)
+        else:
+            ratio = (0.2, 0.05, 0.25, 0.25, 0.25)
+
+    return borders, ratio, flag2num
+
+def get_borders_from_ratio(df_length, ratio):
+    """
+    Calculate boundaries from data length and ratio (supports arbitrary number of phases)
+
+    Args:
+        df_length (int): Length of dataframe
+        ratio (list): Ratio of each phase [train_ratio, val_ratio, test1_ratio, test2_ratio, ...]
+
+    Returns:
+        tuple: (border1s, border2s) - start and end positions of each phase
+
+    Example:
+        ratio = [0.2, 0.05, 0.75]  # train, val, test
+        ratio = [0.2, 0.05, 0.25, 0.25, 0.25]  # train, val, test1, test2, test3
+    """
+    if len(ratio) < 2:
+        raise ValueError(f"Ratio must have at least 2 elements, got {len(ratio)}")
+
+    # Calculate length of each phase
+    phase_lengths = []
+    for i, ratio_val in enumerate(ratio):
+        if i == 1:  # Calculate remaining for val phase
+            continue
+        phase_lengths.append(int(df_length * ratio_val))
+
+    # Calculate val phase length (remaining data)
+    used_length = sum(phase_lengths)
+    val_length = df_length - used_length
+    phase_lengths.insert(1, val_length)  # Insert val at second position
+
+    # Calculate boundaries
+    border1s = [0]
+    border2s = []
+    cumulative = 0
+
+    for length in phase_lengths:
+        cumulative += length
+        border1s.append(cumulative)
+        border2s.append(cumulative)
+
+    # Last boundary ends at df_length
+    border2s[-1] = df_length
+
+    return (border1s, border2s)
+
+def get_border_for_flag(borders, flag, setting, flag2num, seq_len, pred_len, df_length):
+    # =====================================
+    # Data border settings; in online learning, train:valid:test boundaries are continuous
+    # =====================================
+    assert flag in flag2num.keys()
+    # Get boundary corresponding to specified flag
+    border = (borders[0][flag2num[flag]], borders[1][flag2num[flag]])
+
+    if setting in ['online', 'offline_learn']:
+        # Extend forward by input sequence length and prediction length
+        start = border[0] - (seq_len + pred_len) + 1
+    elif setting in ['offline_test']:
+        # Extend forward by input sequence length only
+        start = border[0] - seq_len + 1
+
+    if setting in ['online', 'offline_test']:
+        # Extend backward by prediction length
+        end = border[1] + pred_len
+    elif setting in ['offline_learn']:
+        end = border[1]
+
+    # Adjust so start position is not less than 0 (becomes 0 for train)
+    # Adjust so end position does not exceed data length (becomes data length for last test)
+    border = (max(0, start), min(df_length, end))
+
+    return border
+
+def get_borders(border_type, filename, flag, setting, seq_len, pred_len, df_length):
+    # Get boundaries according to border type
+    borders, ratio, flag2num = get_borders_for_border_type(border_type, filename)
+    # If ratio is not None, get boundaries according to ratio
+    if borders is None:
+        borders = get_borders_from_ratio(df_length, ratio)
+    # Get boundaries according to flag
+    border1, border2 = get_border_for_flag(borders, flag, setting, flag2num, seq_len, pred_len, df_length)
+    return borders, border1, border2
+
 
 class Dataset_ETT_hour(Dataset):
     """
-    ETT(hour)データセット用のPyTorch Datasetクラス。
-    - データの読み込み、スケーリング、時系列特徴量の生成、
-      学習/検証/テスト分割、getitemによるサンプル抽出などを担当。
-    - seq_len, label_len, pred_lenで系列長を柔軟に指定可能。
-    - features='S'（単変量）/ 'M'（多変量）/ 'MS'（多変量+target）に対応。
-    - __getitem__でモデル入力・出力・時刻特徴量を返す。
+    PyTorch Dataset class for ETT(hour) dataset.
+    - Handles data loading, scaling, time series feature generation,
+      train/validation/test split, sample extraction via getitem, etc.
+    - Flexible sequence length specification with seq_len, label_len, pred_len.
+    - Supports features='S' (univariate) / 'M' (multivariate) / 'MS' (multivariate+target).
+    - Returns model input/output/time features via __getitem__.
     """
-    def __init__(self, root_path, flag='train', size=None,
-                 features='S', data_path='ETTh1.csv', ratio=None, borders=None,
-                 target='OT', scale=True, timeenc=0, freq='h', train_only=False, border=None):
+    def __init__(self, root_path, flag='train', setting='offline_learn', size=None,
+                 features='S', data_path='ETTh1.csv', border_type='online',
+                 target='OT', scale=True, timeenc=0, freq='h'):
         # size [seq_len, label_len, pred_len]
         # info
         if size == None:
-            self.seq_len = 24 * 4 * 4
-            self.label_len = 24 * 4
-            self.pred_len = 24 * 4
+            self.seq_len = 24*4*4
+            self.label_len = 24*4
+            self.pred_len = 24*4
         else:
             self.seq_len = size[0]
             self.label_len = size[1]
             self.pred_len = size[2]
         # init
-        assert flag in ['train', 'test', 'val']
-        type_map = {'train': 0, 'val': 1, 'test': 2}
-        self.set_type = type_map[flag]
+        self.flag = flag
+        self.setting = setting
+        self.border_type = border_type
 
         self.features = features
         self.target = target
         self.scale = scale
         self.timeenc = timeenc
         self.freq = freq
-        self.border = border
-        self.borders = borders
 
         self.root_path = root_path
-        self.data_path = data_path
+        self.data_path = data_path # file name
         self.__read_data__()
-
-        # print("seq_len:",self.seq_len,"label_len:",self.label_len,"pred_len:",self.pred_len)
 
     def __read_data__(self):
         """
-        データの読み込み・スケーリング・分割・時刻特徴量生成を行う内部関数。
-        - train/val/testの境界はbordersまたはデフォルト値で決定。
-        - featuresの種類に応じてデータ抽出。
-        - スケーリングは訓練データのみでfit。
-        - 時刻特徴量はutil.timefeatures.time_featuresで生成。
+        Internal function to perform data loading, scaling, splitting, and time feature generation.
+        - train/val/test boundaries are determined by borders or default values.
+        - Data extraction according to features type.
+        - Scaling is fit only on training data.
+        - Time features are generated by util.timefeatures.time_features.
         """
         self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path,
-                                          self.data_path))
+        df_raw = get_alldata(self.data_path, self.root_path)
 
-        if self.borders is None:
-            border1s = [0, 12 * 30 * 24 - self.seq_len, 12 * 30 * 24 + 4 * 30 * 24 - self.seq_len]
-            border2s = [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24]
-        else:
-            border1s, border2s = self.borders
-        self.borders = (border1s, border2s)
-        if self.border is None:
-            border1 = border1s[self.set_type]
-            border2 = border2s[self.set_type]
-        else:
-            border1, border2 = self.border
+        self.borders, border1, border2 = get_borders(self.border_type, self.data_path, self.flag, self.setting, self.seq_len, self.pred_len, len(df_raw))
+        border1s, border2s = self.borders
 
         if self.features == 'M' or self.features == 'MS':
             cols_data = df_raw.columns[1:]
@@ -133,27 +289,26 @@ class Dataset_ETT_hour(Dataset):
         else:
             data = df_data.values
 
+        # Get data according to flag
+        self.data_x = data[border1:border2]
+        self.data_y = data[border1:border2]
+
         df_stamp = df_raw[['date']][border1:border2]
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
         data_stamp = time_features(df_stamp, self.timeenc, freq=self.freq)
-
-        self.data = data[:border2s[-1]].astype(np.float32)
-        self.border = (border1, border2)
-
-        self.data_x = data[border1:border2]
-        self.data_y = data[border1:border2]
         self.data_stamp = data_stamp.astype(np.float32)
+
         self.data_x = torch.from_numpy(self.data_x).float()
         self.data_y = torch.from_numpy(self.data_y).float()
         self.data_stamp = torch.from_numpy(self.data_stamp).float()
 
     def __getitem__(self, index):
         """
-        指定インデックスから系列データ（入力・出力・時刻特徴量）を抽出して返す。
-        - seq_x: 入力系列
-        - seq_y: 予測対象系列
-        - seq_x_mark: 入力系列の時刻特徴量
-        - seq_y_mark: 予測対象系列の時刻特徴量
+        Extract and return sequence data (input, output, time features) from specified index.
+        - seq_x: Input sequence
+        - seq_y: Prediction target sequence
+        - seq_x_mark: Time features of input sequence
+        - seq_y_mark: Time features of prediction target sequence
         """
         s_begin = index
         s_end = s_begin + self.seq_len
@@ -165,32 +320,32 @@ class Dataset_ETT_hour(Dataset):
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
         # print("seq_x.shape:",seq_x.shape,"seq_y.shape:",seq_y.shape,"seq_x_mark.shape:",seq_x_mark.shape,"seq_y_mark.shape:",seq_y_mark.shape)
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, index
 
     def __len__(self):
         """
-        データセットの長さ（サンプル数）を返す。
+        Return dataset length (number of samples).
         """
         return len(self.data_x) - self.seq_len - self.pred_len + 1
 
     def inverse_transform(self, data):
         """
-        スケーリング前の値に逆変換する。
+        Inverse transform to values before scaling.
         """
         return self.scaler.inverse_transform(data)
 
 class Dataset_ETT_minute(Dataset):
     """
-    ETT(minute)データセット用のPyTorch Datasetクラス。
-    - データの読み込み、スケーリング、時系列特徴量の生成、
-      学習/検証/テスト分割、getitemによるサンプル抽出などを担当。
-    - seq_len, label_len, pred_lenで系列長を柔軟に指定可能。
-    - features='S'（単変量）/ 'M'（多変量）/ 'MS'（多変量+target）に対応。
-    - __getitem__でモデル入力・出力・時刻特徴量を返す。
+    PyTorch Dataset class for ETT(minute) dataset.
+    - Handles data loading, scaling, time series feature generation,
+      train/validation/test split, sample extraction via getitem, etc.
+    - Flexible sequence length specification with seq_len, label_len, pred_len.
+    - Supports features='S' (univariate) / 'M' (multivariate) / 'MS' (multivariate+target).
+    - Returns model input/output/time features via __getitem__.
     """
-    def __init__(self, root_path, flag='train', size=None,
-                 features='S', data_path='ETTm1.csv', ratio=None, borders=None,
-                 target='OT', scale=True, timeenc=0, freq='t', train_only=False, border=None):
+    def __init__(self, root_path, flag='train', setting='offline_learn', size=None,
+                 features='S', data_path='ETTm1.csv', border_type='online',
+                 target='OT', scale=True, timeenc=0, freq='t'):
         # size [seq_len, label_len, pred_len]
         # info
         if size == None:
@@ -202,17 +357,15 @@ class Dataset_ETT_minute(Dataset):
             self.label_len = size[1]
             self.pred_len = size[2]
         # init
-        assert flag in ['train', 'test', 'val']
-        type_map = {'train': 0, 'val': 1, 'test': 2}
-        self.set_type = type_map[flag]
+        self.flag = flag
+        self.setting = setting
+        self.border_type = border_type
 
         self.features = features
         self.target = target
         self.scale = scale
         self.timeenc = timeenc
         self.freq = freq
-        self.border = border
-        self.borders = borders
 
         self.root_path = root_path
         self.data_path = data_path
@@ -220,19 +373,10 @@ class Dataset_ETT_minute(Dataset):
 
     def __read_data__(self):
         self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+        df_raw = get_alldata(self.data_path, self.root_path)
 
-        if self.borders is None:
-            border1s = [0, 12 * 30 * 24 * 4 - self.seq_len, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4 - self.seq_len]
-            border2s = [12 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 8 * 30 * 24 * 4]
-        else:
-            border1s, border2s = self.borders
-        self.borders = (border1s, border2s)
-        if self.border is None:
-            border1 = border1s[self.set_type]
-            border2 = border2s[self.set_type]
-        else:
-            border1, border2 = self.border
+        self.borders, border1, border2 = get_borders(self.border_type, self.data_path, self.flag, self.setting, self.seq_len, self.pred_len, len(df_raw))
+        border1s, border2s = self.borders
 
         if self.features == 'M' or self.features == 'MS':
             cols_data = df_raw.columns[1:]
@@ -247,16 +391,15 @@ class Dataset_ETT_minute(Dataset):
         else:
             data = df_data.values
 
+        # Get data according to flag
+        self.data_x = data[border1:border2]
+        self.data_y = data[border1:border2]
+
         df_stamp = df_raw[['date']][border1:border2]
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
         data_stamp = time_features(df_stamp, self.timeenc, freq=self.freq)
-
-        self.data = data[:border2s[-1]].astype(np.float32)
-        self.border = (border1, border2)
-
-        self.data_x = data[border1:border2]
-        self.data_y = data[border1:border2]
         self.data_stamp = data_stamp.astype(np.float32)
+
         self.data_x = torch.from_numpy(self.data_x).float()
         self.data_y = torch.from_numpy(self.data_y).float()
         self.data_stamp = torch.from_numpy(self.data_stamp).float()
@@ -272,7 +415,7 @@ class Dataset_ETT_minute(Dataset):
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, index
 
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1
@@ -282,15 +425,15 @@ class Dataset_ETT_minute(Dataset):
 
 class Dataset_Custom(Dataset):
     """
-    任意のカスタム時系列データセット用のPyTorch Datasetクラス。
-    - get_alldata関数を用いて多様なフォーマットのデータを読み込み。
-    - split_ratioで学習/検証/テストの分割比率を柔軟に指定可能。
-    - features='S'（単変量）/ 'M'（多変量）/ 'MS'（多変量+target）に対応。
-    - __getitem__でモデル入力・出力・時刻特徴量を返す。
+    PyTorch Dataset class for arbitrary custom time series datasets.
+    - Loads diverse format data using get_alldata function.
+    - Flexible train/validation/test split ratio specification with ratio.
+    - Supports features='S' (univariate) / 'M' (multivariate) / 'MS' (multivariate+target).
+    - Returns model input/output/time features via __getitem__.
     """
-    def __init__(self, root_path, flag='train', size=None,
-                 features='S', data_path='ETTh1.csv', ratio=None, borders=None,
-                 target='OT', scale=True, timeenc=0, freq='h', train_only=False, border=None):
+    def __init__(self, root_path, flag='train', setting='offline_learn', size=None,
+                 features='S', data_path='ETTh1.csv', border_type='online',
+                 target='OT', scale=True, timeenc=0, freq='h'):
         # size [seq_len, label_len, pred_len]
         # info
         if size == None:
@@ -302,21 +445,19 @@ class Dataset_Custom(Dataset):
             self.label_len = size[1]
             self.pred_len = size[2]
         # init
-        assert flag in ['train', 'test', 'val']
-        type_map = {'train': 0, 'val': 1, 'test': 2}
-        self.set_type = type_map[flag]
+        self.flag = flag
+        self.setting = setting
+        self.border_type = border_type
 
         self.features = features
         self.target = target
         self.scale = scale
         self.timeenc = timeenc
         self.freq = freq
-        self.train_only = train_only
 
-        self.border = border
-        self.split_ratio = (0.7, 0.2) if ratio is None else ratio
         self.root_path = root_path
         self.data_path = data_path
+
         self.__read_data__()
 
     def __read_data__(self):
@@ -330,18 +471,9 @@ class Dataset_Custom(Dataset):
         if self.features == 'S':
             cols.remove(self.target)
         cols.remove('date')
-        # print(cols)
-        num_train = int(len(df_raw) * (self.split_ratio[0] if not self.train_only else 1))
-        num_test = int(len(df_raw) * self.split_ratio[1])
-        num_vali = len(df_raw) - num_train - num_test
-        border1s = [0, num_train - self.seq_len, len(df_raw) - num_test - self.seq_len]
-        border2s = [num_train, num_train + num_vali, len(df_raw)]
-        self.borders = (border1s, border2s)
-        if self.border is not None:
-            border1, border2 = self.border
-        else:
-            border1 = border1s[self.set_type]
-            border2 = border2s[self.set_type]
+
+        self.borders, border1, border2 = get_borders(self.border_type, self.data_path, self.flag, self.setting, self.seq_len, self.pred_len, len(df_raw))
+        border1s, border2s = self.borders
 
         if self.features == 'M' or self.features == 'MS':
             df_raw = df_raw[['date'] + cols]
@@ -354,26 +486,23 @@ class Dataset_Custom(Dataset):
         if self.scale:
             train_data = df_data[border1s[0]:border2s[0]]
             self.scaler.fit(train_data.values)
-            # print(self.scaler.mean_)
-            # exit()
             data = self.scaler.transform(df_data.values)
         else:
             data = df_data.values
-
-        df_stamp = df_raw[['date']][border1:border2]
-        df_stamp['date'] = pd.to_datetime(df_stamp.date)
-        data_stamp = time_features(df_stamp, self.timeenc, freq=self.freq)
-
         data = data.astype(np.float32)
-        self.data = data
-        self.border = (border1, border2)
 
+        # Get data according to flag
         self.data_x = data[border1:border2]
         if self.features == 'MS':
             self.data_y = data[:, -1][border1:border2]
         else:
             self.data_y = data[border1:border2]
+
+        df_stamp = df_raw[['date']][border1:border2]
+        df_stamp['date'] = pd.to_datetime(df_stamp.date)
+        data_stamp = time_features(df_stamp, self.timeenc, freq=self.freq)
         self.data_stamp = data_stamp.astype(np.float32)
+
         self.data_x = torch.from_numpy(self.data_x).float()
         self.data_y = torch.from_numpy(self.data_y).float()
         self.data_stamp = torch.from_numpy(self.data_stamp).float()
@@ -389,7 +518,7 @@ class Dataset_Custom(Dataset):
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, index
 
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1
@@ -400,10 +529,10 @@ class Dataset_Custom(Dataset):
 
 class Dataset_ETT_hour_CI(Dataset_ETT_hour):
     """
-    ETT(hour)データセットの各特徴量（変数）ごとに系列を抽出するCI（Channel-Individual）拡張クラス。
-    - 通常のDataset_ETT_hourの系列抽出を特徴量ごとに分割して返す。
-    - __getitem__で指定特徴量のみの系列を返す。
-    - __len__は特徴量数倍となる。
+    CI (Channel-Individual) extension class that extracts sequences for each feature (variable) of ETT(hour) dataset.
+    - Returns sequences from normal Dataset_ETT_hour split by feature.
+    - Returns sequences of only specified feature via __getitem__.
+    - __len__ becomes multiple of number of features.
     """
     def __init__(self, root_path, *args, **kwargs):
         super().__init__(root_path, *args, **kwargs)
@@ -422,7 +551,7 @@ class Dataset_ETT_hour_CI(Dataset_ETT_hour):
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, index
 
     def __len__(self):
         return super().__len__() * self.enc_in
@@ -430,10 +559,10 @@ class Dataset_ETT_hour_CI(Dataset_ETT_hour):
 
 class Dataset_ETT_minute_CI(Dataset_ETT_minute):
     """
-    ETT(minute)データセットの各特徴量（変数）ごとに系列を抽出するCI（Channel-Individual）拡張クラス。
-    - 通常のDataset_ETT_minuteの系列抽出を特徴量ごとに分割して返す。
-    - __getitem__で指定特徴量のみの系列を返す。
-    - __len__は特徴量数倍となる。
+    CI (Channel-Individual) extension class that extracts sequences for each feature (variable) of ETT(minute) dataset.
+    - Returns sequences from normal Dataset_ETT_minute split by feature.
+    - Returns sequences of only specified feature via __getitem__.
+    - __len__ becomes multiple of number of features.
     """
     def __init__(self, root_path, *args, **kwargs):
         super().__init__(root_path, *args, **kwargs)
@@ -452,7 +581,7 @@ class Dataset_ETT_minute_CI(Dataset_ETT_minute):
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, index
 
     def __len__(self):
         return super().__len__() * self.enc_in
@@ -460,10 +589,10 @@ class Dataset_ETT_minute_CI(Dataset_ETT_minute):
 
 class Dataset_Custom_CI(Dataset_Custom):
     """
-    カスタムデータセットの各特徴量（変数）ごとに系列を抽出するCI（Channel-Individual）拡張クラス。
-    - 通常のDataset_Customの系列抽出を特徴量ごとに分割して返す。
-    - __getitem__で指定特徴量のみの系列を返す。
-    - __len__は特徴量数倍となる。
+    CI (Channel-Individual) extension class that extracts sequences for each feature (variable) of custom dataset.
+    - Returns sequences from normal Dataset_Custom split by feature.
+    - Returns sequences of only specified feature via __getitem__.
+    - __len__ becomes multiple of number of features.
     """
     def __init__(self, root_path, *args, **kwargs):
         super().__init__(root_path, *args, **kwargs)
@@ -482,7 +611,7 @@ class Dataset_Custom_CI(Dataset_Custom):
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, index
 
     def __len__(self):
         return super().__len__() * self.enc_in
@@ -490,75 +619,24 @@ class Dataset_Custom_CI(Dataset_Custom):
 
 class Dataset_Recent(Dataset):
     """
-    直近系列情報を活用するためのラッパーデータセットクラス。
-    - あるインデックスのデータと、その直近recent_num個分のデータを同時に返す。
-    - gapで系列間の間隔を指定可能。
-    - strengthを指定すると時系列データに周期的な変動を加えることも可能。
-    - __getitem__で(現在データ, 直近データ)または(直近データ, 現在データ)のタプルを返す。
+    Wrapper dataset class for utilizing recent sequence information.
+    - Returns data at certain index and recent data for recent_num times simultaneously.
+    - Can specify interval between sequences with gap.
+    - Can also add periodic fluctuations to time series data by specifying strength.
+    - Returns tuple of (current data, recent data) or (recent data, current data) via __getitem__.
     """
-    def __init__(self, dataset, gap: Union[int, tuple, list], recent_num=1, take_post=0, strength=0, **kwargs):
+    def __init__(self, dataset, gap: Union[int, tuple, list], **kwargs):
         super().__init__()
-        self.more = gap - recent_num + 1
         self.dataset = dataset
         self.gap = gap
-        self.recent_num = recent_num
-        if strength:
-            print("Modify time series with strength =", strength)
-            for i in range(3, len(self.dataset.data_y)):
-                self.dataset.data_x[i] *= 1 + 0.1 * (i // 24 % strength)
-
-    def _stack(self, data):
-        if isinstance(data[0], np.ndarray):
-            return np.vstack(data)
-        else:
-            return torch.stack(data, 0)
 
     def __getitem__(self, index):
         """
-        指定インデックスのデータと、その直近系列データを返す。
-        - recent_num=1の場合: (indexのデータ, index+gapのデータ)のタプルを返す。
-        - recent_num>1の場合:
-            ・current_data: index+gap+recent_num-1のデータ
-            ・recent_data: indexからindex+recent_num-1までの直近系列をまとめて返す。
-            ・current_dataがタプルでなければ(recent_data, current_data)のタプル。
-            ・current_dataがタプルの場合は、各要素ごとに直近系列をまとめて返す。
-        - 直近系列はtorch.stackやnp.vstackでまとめてテンソル化される。
-        - オンライン学習では，recent_dataで学習し，current_dataで検証する．
+        Returns data at specified index (recent_batch) and its recent sequence data (current_batch).
+        - Returns tuple of (data at index, data at index+gap).
+        - In online learning, trains with recent_batch and validates with current_batch.
         """
-        if self.recent_num == 1:
-            # recent_num=1の場合：単純に現在のデータとgap分先のデータを返す
-            # 
-            return self.dataset[index], self.dataset[index + self.gap]
-        else:
-            # recent_num>1の場合：複数の直近系列をまとめて返す
-            # current_data: 予測対象となるデータ（gap+recent_num-1分先のデータ）
-            current_data = self.dataset[index + self.gap + self.recent_num - 1]
-
-            if not isinstance(current_data, tuple):
-                # current_dataがタプルでない場合（単一のテンソル/配列）
-                # indexからindex+recent_num-1までの直近系列を取得
-                recent_data = tuple(self.dataset[index + n] for n in range(self.recent_num))
-                # 直近系列をまとめてテンソル化（_stackでtorch.stackまたはnp.vstack）
-                recent_data = self._stack(recent_data)
-                # (current_data, recent_data)のタプルを返す
-                return current_data, recent_data
-            else:
-                # current_dataがタプルの場合（複数の要素を持つ）
-                # 各要素に対応する空のリストを作成
-                recent_data = tuple([] for _ in range(len(current_data)))
-
-                # 直近系列の各時点について
-                for past in range(self.recent_num):
-                    # index+pastのデータを取得
-                    past_data_tuple = self.dataset[index + past]
-                    # 各要素（seq_x, seq_y, seq_x_mark, seq_y_markなど）を対応するリストに追加
-                    for j, past_data in enumerate(past_data_tuple):
-                        recent_data[j].append(past_data)
-
-                # 各要素の直近系列をまとめてテンソル化
-                recent_data = tuple(self._stack(recent_d) for recent_d in recent_data)
-                # (recent_data, current_data)のタプルを返す
-                return recent_data, current_data
+        return self.dataset[index], self.dataset[index + self.gap]
 
     def __len__(self):
-        return len(self.dataset) - self.more
+        return len(self.dataset) - self.gap

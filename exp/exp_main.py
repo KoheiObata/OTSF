@@ -1,28 +1,25 @@
 """
-メイン実験クラス
-基本的な時系列予測実験を実行するクラス
-Exp_Basicを継承して具体的な実験処理を実装
+Main experiment class
+Class to execute basic time series forecasting experiments
+Inherits from Exp_Basic and implements concrete experiment processing
 """
 
 import importlib
+from tqdm import tqdm
 import os
 import time
 import warnings
+from pathlib import Path
 import numpy as np
 
 import torch
-import torch.nn as nn
 from torch.optim import lr_scheduler
 import torch.distributed as dist
-from torch.utils.data import DataLoader
-from torch.nn.parallel import DistributedDataParallel as DDP
 
-import models.normalization #RevIn
-import settings
-from data_provider.data_factory import get_dataset
 from exp.exp_basic import Exp_Basic
 from util.tools import EarlyStopping, adjust_learning_rate, visual, test_params_flop, load_model_compile
 from util.metrics import metric, update_metrics, calculate_metrics
+from util.metrics_collector import TimestepMetricsCollector, PredictionCollector, calculate_metrics as calc_metrics, get_memory_usage, get_gpu_memory_usage
 
 
 warnings.filterwarnings('ignore')
@@ -31,6 +28,14 @@ warnings.filterwarnings('ignore')
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super().__init__(args)
+
+        # Initialize metrics collection
+        self.metrics_collector = None
+        self.enable_detailed_metrics = getattr(args, 'enable_detailed_metrics', False)
+
+        # Initialize prediction result collection
+        self.prediction_collector = None
+        self.save_prediction = getattr(args, 'save_prediction', False)
 
     def _unfreeze(self, model):
         pass
@@ -41,179 +46,43 @@ class Exp_Main(Exp_Basic):
             return self.model.module
         return self.model
 
-    def _build_model(self, model=None, framework_class=None):
-        """
-        モデルを構築するメソッド
-        Exp_Basicで定義された抽象メソッドの具体的な実装
-
-        Args:
-            model: 既存のモデル（Noneの場合は新規作成）
-            framework_class: モデルをラップするフレームワーククラス（オプション）
-
-        Returns:
-            torch.nn.Module: 構築されたモデル
-        """
-        # =====================================
-        # 1. 基本モデルの作成
-        # =====================================
-        if model is None:
-            if self.args.model.endswith('_Ensemble'):
-                # Ensembleモデルの場合：複数のモデルを組み合わせたアンサンブルモデルを作成
-                # 例：'PatchTST_Ensemble' -> models.PatchTST.Model_Ensemble
-                base_model_name = self.args.model[:-len('_Ensemble')]
-                model = importlib.import_module(f'models.{base_model_name}').Model_Ensemble(
-                    self.args).float()
-            else:
-                # 通常のモデルの場合：単一モデルを作成
-                # 例：'PatchTST' -> models.PatchTST.Model
-                # モジュールを動的にインポート
-                model = importlib.import_module(f'models.{self.args.model}').Model(self.args).float()
-
-        # =====================================
-        # 2. 正規化層の追加
-        # =====================================
-        if self.args.normalization and self.args.online_method != 'OneNet' and self.args.model != 'FSNet_Ensemble':
-            # 正規化が必要で、OneNetやFSNet_Ensembleでない場合
-            # ForecastModelでモデルをラップし、RevINなどの正規化処理を追加
-            model = models.normalization.ForecastModel(
-                model,
-                num_features=self.args.enc_in,  # 入力特徴量数
-                seq_len=self.args.seq_len,      # シーケンス長
-                process_method=self.args.normalization  # 正規化手法（例：'revin'）
-            )
-
-        # =====================================
-        # 3. チェックポイントからの読み込み
-        # =====================================
-        if hasattr(self.args, 'load_path'):
-            # modelを更新する場合freeze=Falseになる(基本的にこの設定)
-            if not self.args.freeze:
-                # パラメータが凍結されていない場合、最適化器も再作成
-                self.model_optim = self._select_optimizer(model=model.to(self.device))
-            print('Load checkpoints from', self.args.load_path)
-            # チェックポイントからモデルパラメータを読み込み
-            model = self.load_checkpoint(self.args.load_path, model)
-            if self.model_optim is not None:
-                print('Learning rate of model_optim is', self.model_optim.param_groups[0]['lr'])
-
-            if self.args.freeze:
-                # パラメータを凍結（勾配計算を無効化）
-                model.requires_grad_(False)
-
-        # =====================================
-        # 4. フレームワーククラスによるラップ
-        # =====================================
-        # modelを外側からラップする
-        model_params = sum([param.nelement() for param in model.parameters()])
-        # ProceedとOneNetではframework_classが指定される
-        if framework_class is not None:
-            if isinstance(framework_class, list):
-                # 複数のフレームワーククラスがある場合、順次適用
-                for cls in framework_class:
-                    model = cls(model, self.args)
-            else:
-                # 単一のフレームワーククラスを適用
-                model = framework_class(model, self.args)
-
-            # パラメータ数の変化を記録
-            new_model_params = sum([param.nelement() for param in model.parameters()])
-            print(f'Number of Params: {model_params} -> {new_model_params} (+{new_model_params - model_params})')
-            self.model_params = model_params
-
-            # 最適化器に新しいパラメータを追加
-            if self.model_optim is not None:
-                param_set = set()
-                for group in self.model_optim.param_groups:
-                    param_set.update(set(group['params']))
-                # 既存の最適化器に含まれていない新しいパラメータを検索
-                new_params = list(filter(lambda p: p not in param_set and p.requires_grad, model.parameters()))
-                if len(new_params) > 0:
-                    # 新しいパラメータグループを最適化器に追加
-                    self.model_optim.add_param_group({'params': new_params})
-
-        # =====================================
-        # 5. 分散学習の設定
-        # =====================================
-        if self.args.use_multi_gpu and self.args.use_gpu:
-            # マルチGPU（DataParallel）の設定
-            model = nn.DataParallel(model, device_ids=self.args.device_ids)
-        elif self.args.local_rank != -1:
-            # 分散学習（DistributedDataParallel）の設定
-            model = model.to(self.device)
-            model = DDP(
-                model,
-                device_ids=[self.args.local_rank],
-                output_device=self.args.local_rank,
-                find_unused_parameters=self.args.find_unused_parameters
-            )
-
-        # =====================================
-        # 6. PyTorch 2.0のコンパイル（オプション）
-        # =====================================
-        if torch.__version__ >= '2' and self.args.compile:
-            print('Compile the model by Pytorch 2.0')
-            model = torch.compile(model)
-
-        return model
-
-    def _process_batch(self, batch):
-        batch = super()._process_batch(batch)
-        batch_x, batch_y = batch[:2]
-        if self.args.model in settings.need_x_y_mark:
-            batch_x, batch_y, batch_x_mark, batch_y_mark = batch[:4]
-
-            # decoder input
-            dec_inp = torch.zeros_like(batch_x[:, -self.args.pred_len:, :])
-            dec_inp = torch.cat([batch_x[:, -self.args.label_len:, :], dec_inp], dim=1)
-
-            inp = [batch_x, batch_x_mark, dec_inp, batch_y_mark] + batch[4:]
-        elif self.args.model in settings.need_x_mark or hasattr(self.args, 'online_method') and self.args.online_method == 'OneNet':
-            # batch=[batch_x, batch_x_mark]にする
-            batch = batch[:3] + batch[4:] #batch_y_markを削除
-            inp = [batch_x] + batch[2:] #batch_yを削除
-        else:
-            # batch=[batch_x]にする
-            batch = batch[:2] + batch[4:]
-            inp = [batch_x] + batch[2:]
-        return inp
 
     def vali(self, vali_data, vali_loader, criterion):
         """
-        検証（バリデーション）処理を実行するメソッド
+        Method to execute validation processing
 
         Args:
-            vali_data: 検証データセット
-            vali_loader: 検証データローダー
-            criterion: 損失関数
+            vali_data: Validation dataset
+            vali_loader: Validation dataloader
+            criterion: Loss function
 
         Returns:
-            float: 平均検証損失
+            float: Average validation loss
         """
-        self.phase = 'val'  # フェーズを検証に設定
+        self.phase = 'valid'  # Set phase to validation
         total_loss = []
-        self.model.eval()  # モデルを評価モードに設定
-
-        # 勾配計算を無効化してメモリ使用量を削減
+        self.model.eval()  # Set model to evaluation mode
+        # Disable gradient computation to reduce memory usage
         with torch.no_grad():
             for i, batch in enumerate(vali_loader):
-                # 順伝播で予測を取得
+                # Get predictions with forward propagation
                 outputs = self.forward(batch)
                 if isinstance(outputs, tuple):
-                    outputs = outputs[0]  # タプルの場合は最初の要素を使用
+                    outputs = outputs[0]  # Use first element if tuple
 
-                # 正解値を取得
+                # Get ground truth
                 true = batch[self.label_position]
                 if not self.args.pin_gpu:
                     true = true.to(self.device)
 
-                # 損失を計算
+                # Calculate loss
                 loss = criterion(outputs, true)
                 total_loss.append(loss.item())
 
-        # 平均損失を計算
+        # Calculate average loss
         total_loss = np.average(total_loss)
 
-        # 分散学習の場合、全プロセス間で損失を同期
+        # Synchronize loss across all processes in distributed learning
         if self.args.local_rank != -1:
             total_loss = torch.tensor(total_loss, device=self.device)
             dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
@@ -221,53 +90,45 @@ class Exp_Main(Exp_Basic):
 
         return total_loss
 
-    def train(self, setting, train_data=None, train_loader=None, vali_data=None, vali_loader=None):
+    def train(self):
         """
-        モデルの訓練処理を実行するメソッド
+        Method to execute model training
 
         Args:
-            setting: 実験設定名
-            train_data: 訓練データセット（Noneの場合は自動取得）
-            train_loader: 訓練データローダー（Noneの場合は自動取得）
-            vali_data: 検証データセット（Noneの場合は自動取得）
-            vali_loader: 検証データローダー（Noneの場合は自動取得）
 
         Returns:
-            tuple: (モデル, 訓練データ, 訓練ローダー, 検証データ, 検証ローダー)
+            tuple: (model, train_data, train_loader, vali_data, vali_loader)
         """
         # =====================================
-        # 1. データの準備
+        # 1. Prepare data
         # =====================================
-        if train_data is None:
-            train_data, train_loader = self._get_data(flag='train')
-        if vali_data is None and not self.args.train_only:
-            vali_data, vali_loader = self._get_data(flag='val')
+        self.phase = 'train'
+        train_data, train_loader = self._get_data(flag='train', setting='offline_learn')
+        if self.args.valid:
+            vali_data, vali_loader = self._get_data(flag='valid', setting='offline_learn')
 
         # =====================================
-        # 2. チェックポイントパスの設定
+        # 2. Set checkpoint path
         # =====================================
-        if self.args.checkpoints:
-            path = os.path.join(self.args.checkpoints, setting)
-        else:
-            path = None
+        path = os.path.join(self.args.savepath_itr, 'checkpoints')
 
         # =====================================
-        # 3. 訓練の初期設定
+        # 3. Initial training setup
         # =====================================
         train_steps = len(train_loader)
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
-        model_optim = self._select_optimizer()  # 最適化器の選択
-        criterion = self._select_criterion()    # 損失関数の選択
+        model_optim = self._select_optimizer()  # Select optimizer
+        criterion = self._select_criterion()    # Select loss function
 
-        # 自動混合精度の設定
+        # Configure automatic mixed precision
         scaler = torch.cuda.amp.GradScaler() if self.args.use_amp else None
 
         # =====================================
-        # 4. 学習率スケジューラーの設定
+        # 4. Configure learning rate scheduler
         # =====================================
         if self.args.lradj == 'TST':
-            # TST用のOneCycleLRスケジューラー
+            # OneCycleLR scheduler for TST
             scheduler = lr_scheduler.OneCycleLR(
                 optimizer=model_optim,
                 steps_per_epoch=train_steps,
@@ -276,7 +137,7 @@ class Exp_Main(Exp_Basic):
                 max_lr=self.args.learning_rate
             )
         elif self.args.model == 'GPT4TS':
-            # GPT4TS用のCosineAnnealingLRスケジューラー
+            # CosineAnnealingLR scheduler for GPT4TS
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 model_optim, T_max=self.args.tmax, eta_min=1e-8
             )
@@ -284,241 +145,172 @@ class Exp_Main(Exp_Basic):
             scheduler = None
 
         # =====================================
-        # 5. エポックループ
+        # 5. Epoch loop
         # =====================================
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
 
-            # 分散学習時のサンプラー設定
+            # Set sampler for distributed learning
             if self.args.local_rank != -1:
                 train_loader.sampler.set_epoch(epoch)
-                if hasattr(self, 'online_phases') and 'val' not in self.online_phases:
+                if hasattr(self, 'online_phases') and 'valid' not in self.online_phases:
                     vali_loader.sampler.set_epoch(epoch)
 
-            self.model.train()  # モデルを訓練モードに設定
+            self.model.train()  # Set model to training mode
             epoch_time = time.time()
 
             # =====================================
-            # 6. バッチループ（1エポック分の訓練）
+            # 6. Batch loop (one epoch of training)
             # =====================================
             for i, batch in enumerate(train_loader):
-                self.phase = 'train'
                 iter_count += 1
 
-                # モデルの更新（順伝播 + 逆伝播 + パラメータ更新）
+                # Model update (forward + backward + parameter update)
                 loss, _ = self._update(batch, criterion, model_optim, scaler)
                 train_loss.append(loss.item())
 
-                # TSTスケジューラーの場合、ステップごとに学習率を更新
+                # Update learning rate per step for TST scheduler
                 if self.args.lradj == 'TST':
                     adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args, printout=False)
                     scheduler.step()
 
             # =====================================
-            # 7. エポック終了時の処理
+            # 7. End of epoch processing
             # =====================================
-            self.phase = 'train'
             train_loss = np.average(train_loss)
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f}".format(
                 epoch + 1, train_steps, train_loss), end=' ')
 
-            # 検証処理（train_onlyでない場合）
-            if not self.args.train_only:
+            if self.args.valid:
                 if epoch >= self.args.begin_valid_epoch:
                     vali_loss = self.vali(vali_data, vali_loader, criterion)
                     print("Vali Loss: {:.7f}".format(vali_loss))
                     early_stopping(vali_loss, self, path)
                 else:
-                    print()
+                    print("epoch < begin_valid_epoch")
             else:
-                # train_onlyの場合、訓練損失でearly stopping
+                # For train_only, use training loss for early stopping
                 early_stopping(train_loss, self, path)
+            self.phase = 'train'
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
 
-            # Early stoppingのチェック
+            # Check early stopping
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
 
-            # 学習率の調整（TST以外の場合）
+            # Adjust learning rate (for non-TST cases)
             if self.args.lradj != 'TST':
                 adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args)
             else:
                 print('Updating learning rate to {}'.format(scheduler.get_last_lr()[0]))
 
         # =====================================
-        # 8. 訓練終了後の処理
+        # 8. Post-training processing
         # =====================================
         if self.args.train_epochs > 0:
             print('Best Valid MSE:', -early_stopping.best_score)
-            # 最良のチェックポイントをロード
-            self.load_state_dict(early_stopping.best_checkpoint,
-                                 strict=not (hasattr(self.args, 'freeze') and self.args.freeze))
+            # Load best checkpoint
+            self.load_state_dict(early_stopping.best_checkpoint, strict=not (hasattr(self.args, 'freeze') and self.args.freeze))
 
-            # チェックポイントの保存
+            # Save checkpoint
             if path and self.args.local_rank <= 0:
                 if not os.path.exists(path):
                     os.makedirs(path)
                 print('Save checkpoint to', path)
                 torch.save(self.state_dict(local_rank=self.args.local_rank), path + '/' + 'checkpoint.pth')
 
-        return self.model, train_data, train_loader, vali_data, vali_loader
+        return
 
-    def test(self, setting, test_data=None, test_loader=None, test=0, target_variate=None):
+    def test(self, phase='test', savename=''):
         """
-        テスト処理を実行するメソッド
+        Method to execute test processing
 
         Args:
-            setting: 実験設定名
-            test_data: テストデータセット（Noneの場合は自動取得）
-            test_loader: テストデータローダー（Noneの場合は自動取得）
-            test: テストフラグ（0以外の場合、チェックポイントをロード）
-            target_variate: ターゲット変数（特定の変数のみ評価する場合）
 
         Returns:
-            tuple: (MSE, MAE, テストデータ, テストローダー)
+            tuple: (MSE, MAE, test_data, test_loader)
         """
-        self.phase = 'test'
+        self.phase = phase
+        self.savename = savename
 
-        # テストデータの準備
-        if test_data is None:
-            test_data, test_loader = self._get_data(flag='test')
+        # Initialize metrics collection
+        if self.enable_detailed_metrics:
+            metrics_dir = Path(self.args.savepath_itr) / self.savename / "metrics"
+            self.metrics_collector = TimestepMetricsCollector(metrics_dir, use_gpu=self.args.use_gpu, device=self.device)
+            self.metrics_collector.start_collection()
 
-        # テストフラグが設定されている場合、チェックポイントをロード
-        if test:
-            path = os.path.join("checkpoints", setting, 'checkpoint.pth')
-            print('Loading', path)
-            self.load_checkpoint(path)
+        # Initialize prediction result collection
+        if self.save_prediction:
+            predictions_dir = Path(self.args.savepath_itr) / self.savename / "predictions"
+            self.prediction_collector = PredictionCollector(predictions_dir)
+
+        # Prepare test data
+        test_data, test_loader = self._get_data(flag=self.phase, setting='offline_test')
 
         # =====================================
-        # テスト実行
+        # Execute test
         # =====================================
-        self.model.eval()  # モデルを評価モードに設定
-
-        # 統計情報の初期化
+        # Initialize statistics
         statistics = {k: 0 for k in ['total', 'y_sum', 'MSE', 'MAE']}
 
-        # 勾配計算を無効化してメモリ使用量を削減
+        test_loader = tqdm(test_loader, mininterval=10)
+
+        self.model.eval()  # Set model to evaluation mode
+        # Disable gradient computation to reduce memory usage
         with torch.no_grad():
             for i, batch in enumerate(test_loader):
-                # 順伝播で予測を取得
+                timestep_start_time = time.time()
+                # Get predictions with forward propagation
                 outputs = self.forward(batch)
 
-                # 正解値を取得
+                # Get ground truth
                 true = batch[self.label_position]
                 if not self.args.pin_gpu:
                     true = true.to(self.device)
 
-                # メトリクスの更新
-                update_metrics(outputs, true, statistics, target_variate)
+                # Collect prediction results
+                if self.prediction_collector:
+                    self.prediction_collector.add_prediction(i, batch[0], batch[1], outputs)
+                # Update metrics
+                update_metrics(outputs, true, statistics)
 
-        # 最終的なメトリクスを計算
+                # Metrics collection per timestep
+                if self.enable_detailed_metrics:
+                    timestep_time = time.time() - timestep_start_time
+                    memory_usage_percent, memory_usage_str = get_memory_usage()
+                    gpu_memory_allocated_mb, gpu_memory_max_allocated_mb = get_gpu_memory_usage(self.device)
+
+                    # Calculate MSE/MAE at current timestep
+                    current_metrics = calc_metrics(outputs, batch[self.label_position].to(self.device))
+
+                    if self.metrics_collector:
+                        self.metrics_collector.add_timestep_metrics(
+                            timestep=i,
+                            mse=current_metrics['mse'],
+                            mae=current_metrics['mae'],
+                            prediction_time=timestep_time,
+                            memory_usage_str=memory_usage_str,
+                            memory_usage_percent=memory_usage_percent,
+                            gpu_memory_allocated_mb=gpu_memory_allocated_mb,
+                            gpu_memory_max_allocated_mb=gpu_memory_max_allocated_mb
+                        )
+
+        # End metrics collection
+        if self.enable_detailed_metrics and self.metrics_collector:
+            self.metrics_collector.stop_collection()
+            self.metrics_collector.save_metrics()
+
+        # Save prediction results
+        if self.prediction_collector:
+            print(f'save prediction is to heavy, skip')
+            # self.prediction_collector.save_predictions()
+
+        # Calculate final metrics
         metrics = calculate_metrics(statistics)
         mse, mae = metrics['MSE'], metrics['MAE']
-        print('mse:{}, mae:{}'.format(mse, mae))
+        print(self.phase, 'mse:{}, mae:{}'.format(mse, mae))
 
-        return mse, mae, test_data, test_loader
-
-    def predict(self, path, setting, load=False):
-        """
-        予測処理を実行するメソッド（未来データの予測）
-
-        Args:
-            path: チェックポイントファイルのパス
-            setting: 実験設定名
-            load: チェックポイントをロードするかどうか
-        """
-        # チェックポイントのロード
-        if load:
-            print('Loading', path)
-            self.load_checkpoint(path)
-
-        preds = []
-        self.model.eval()  # モデルを評価モードに設定
-
-        # =====================================
-        # 予測用データの準備
-        # =====================================
-        # 境界設定を調整（未来予測用）
-        self.args.borders[1][0] = self.args.borders[-1][1]
-        self.wrap_data_kwargs['borders'] = self.args.borders
-
-        # 予測用データセットの作成（訓練データ全体を使用）
-        data_set = get_dataset(self.args, 'train', self.device,
-                               wrap_class=self.args.wrap_data_class, **self.wrap_data_kwargs)
-
-        # 予測用データローダーの作成
-        dataloader = DataLoader(
-            data_set,
-            batch_size=self.args.batch_size,
-            shuffle=False,  # 予測時はシャッフルしない
-            num_workers=self.args.num_workers,
-            drop_last=False,
-            pin_memory=False,
-        )
-
-        # =====================================
-        # 予測実行
-        # =====================================
-        with torch.no_grad():
-            for i, batch in enumerate(dataloader):
-                # 順伝播で予測を取得
-                outputs = self.forward(batch)
-                pred = outputs.detach().cpu().numpy()  # CPUに移動してNumPy配列に変換
-                preds.append(pred)
-
-        # 予測結果を結合
-        preds = np.vstack(preds)
-
-        # 予測結果をファイルに保存
-        np.save('./results/' + setting + '_pred.npy', preds)
-        return
-
-    def analysis(self):
-        """
-        モデルの分析処理を実行するメソッド
-        推論時間、メモリ使用量、FLOPs（浮動小数点演算数）を測定
-        """
-        # テストデータセットの取得
-        data = get_dataset(self.args, 'test', self.device, wrap_class=self.args.wrap_data_class,
-                                  **self.wrap_data_kwargs)
-
-        times_infer = []  # 推論時間のリスト
-        print('GPU Mem:', torch.cuda.max_memory_allocated())  # 初期GPUメモリ使用量
-
-        self.model.eval()  # モデルを評価モードに設定
-
-        # =====================================
-        # 推論時間の測定
-        # =====================================
-        with torch.no_grad():
-            for i in range(50):  # 50回の推論を実行
-                start_time = time.time()
-
-                # データをバッチ形式に変換してデバイスに移動
-                current_data = [d.unsqueeze(0).to(self.device) for d in data[i]]
-
-                # 順伝播実行
-                self.forward(current_data)
-
-                # 最初の10回は除外（ウォームアップ）
-                if i > 10:
-                    times_infer.append(time.time() - start_time)
-
-                # 30回目で終了
-                if i == 30:
-                    break
-
-        # =====================================
-        # 結果の出力
-        # =====================================
-        print('Final GPU Mem:', torch.cuda.max_memory_allocated())  # 最終GPUメモリ使用量
-
-        # 推論時間の平均を計算（最大値と最小値を除外）
-        times_infer = (sum(times_infer) - min(times_infer) - max(times_infer)) / (len(times_infer) - 2)
-        print('Latency:', times_infer)  # 平均推論時間
-
-        # FLOPs（浮動小数点演算数）の測定
-        test_params_flop(self.model, (1, self.args.seq_len, self.args.enc_in))
+        return mse, mae

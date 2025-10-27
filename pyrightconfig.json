@@ -1,0 +1,6 @@
+{
+	"exclude": [
+	  "./results/online3test",
+	  "./scripts",
+	]
+  }

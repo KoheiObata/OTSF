@@ -2,6 +2,371 @@ import torch.nn as nn
 import torch
 
 
+class ConvEncoder(nn.Module):
+    """
+    Generic ConvEncoder - supports arbitrary window size and feature count
+    input: [batch, window, feature]
+    """
+    def __init__(self, output_dim, window_size=100, feature_dim=1):
+        super(ConvEncoder, self).__init__()
+        self.output_dim = output_dim
+        self.window_size = window_size
+        self.feature_dim = feature_dim
+
+        # More efficient architecture to handle large feature_dim
+        if feature_dim > 500:
+            # Efficient architecture for Traffic dataset (feature_dim > 500)
+            self.conv1 = nn.Conv2d(1, 8, kernel_size=(9, min(50, feature_dim)), stride=(2, 2), padding=(0, 0))
+            self.bn1 = nn.BatchNorm2d(8)
+
+            self.conv2 = nn.Conv2d(8, 16, kernel_size=(7, min(50, feature_dim//2)), stride=(2, 2), padding=(0, 0))
+            self.bn2 = nn.BatchNorm2d(16)
+
+            self.conv3 = nn.Conv2d(16, 32, kernel_size=(5, min(50, feature_dim//4)), stride=(2, 1), padding=(0, 0))
+            self.bn3 = nn.BatchNorm2d(32)
+
+            self.conv4 = nn.Conv2d(32, 64, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0))
+            self.bn4 = nn.BatchNorm2d(64)
+        elif feature_dim > 100:
+            # Ultra-lightweight architecture for ECL dataset (100 < feature_dim <= 500)
+            # Use only 1D convolution to maximize CUDA compatibility
+            self.conv1 = nn.Conv1d(1, 16, kernel_size=9, stride=2, padding=0)
+            self.bn1 = nn.BatchNorm1d(16)
+
+            self.conv2 = nn.Conv1d(16, 32, kernel_size=7, stride=2, padding=0)
+            self.bn2 = nn.BatchNorm1d(32)
+
+            self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=0)
+            self.bn3 = nn.BatchNorm1d(64)
+
+            self.conv4 = nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=0)
+            self.bn4 = nn.BatchNorm1d(128)
+        else:
+            # Normal architecture
+            self.conv1 = nn.Conv2d(1, 16, kernel_size=(9, min(3, feature_dim)), stride=(2, 1), padding=(0, 0))
+            self.bn1 = nn.BatchNorm2d(16)
+
+            self.conv2 = nn.Conv2d(16, 32, kernel_size=(7, min(3, feature_dim)), stride=(2, 1), padding=(0, 0))
+            self.bn2 = nn.BatchNorm2d(32)
+
+            self.conv3 = nn.Conv2d(32, 64, kernel_size=(5, min(3, feature_dim)), stride=(2, 1), padding=(0, 0))
+            self.bn3 = nn.BatchNorm2d(64)
+
+            self.conv4 = nn.Conv2d(64, 128, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0))
+            self.bn4 = nn.BatchNorm2d(128)
+
+        # Activation function
+        self.act = nn.ReLU(inplace=True)
+
+        # Calculate output size dynamically
+        self._calculate_output_size()
+
+        # Final output layer
+        if feature_dim > 500:
+            self.conv_z = nn.Conv2d(64, output_dim, kernel_size=(self.final_h, self.final_w), stride=(1, 1))
+        elif feature_dim > 100:
+            self.conv_z = nn.Conv1d(128, output_dim, kernel_size=self.final_h, stride=1)
+        else:
+            self.conv_z = nn.Conv2d(128, output_dim, kernel_size=(self.final_h, self.final_w), stride=(1, 1))
+
+    def _calculate_output_size(self):
+        """Calculate actual output size after convolution using dummy data"""
+        with torch.no_grad():
+            # Create dummy data: [1, 1, window_size, feature_dim]
+            dummy_input = torch.zeros(1, 1, self.window_size, self.feature_dim)
+
+            # Create temporary convolution layers (same configuration as actual ConvEncoder)
+            if self.feature_dim > 500:
+                # Efficient architecture for Traffic dataset (feature_dim > 500)
+                temp_conv1 = nn.Conv2d(1, 8, kernel_size=(9, min(50, self.feature_dim)), stride=(2, 2), padding=(0, 0))
+                temp_conv2 = nn.Conv2d(8, 16, kernel_size=(7, min(50, self.feature_dim//2)), stride=(2, 2), padding=(0, 0))
+                temp_conv3 = nn.Conv2d(16, 32, kernel_size=(5, min(50, self.feature_dim//4)), stride=(2, 1), padding=(0, 0))
+                temp_conv4 = nn.Conv2d(32, 64, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0))
+            elif self.feature_dim > 100:
+                # 1D convolution calculation for ECL dataset
+                # Create dummy data: [1, 1, window_size * feature_dim]
+                dummy_input = torch.zeros(1, 1, self.window_size * self.feature_dim)
+
+                # Create temporary 1D convolution layers
+                temp_conv1 = nn.Conv1d(1, 16, kernel_size=9, stride=2, padding=0)
+                temp_conv2 = nn.Conv1d(16, 32, kernel_size=7, stride=2, padding=0)
+                temp_conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=0)
+                temp_conv4 = nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=0)
+
+                # Apply 1D convolution layers
+                x = torch.relu(temp_conv1(dummy_input))
+                x = torch.relu(temp_conv2(x))
+                x = torch.relu(temp_conv3(x))
+                x = torch.relu(temp_conv4(x))
+
+                # Get final size (1D)
+                self.final_h = x.size(2)
+                self.final_w = 1  # Width is 1 for 1D convolution
+                return
+            else:
+                # Normal architecture
+                temp_conv1 = nn.Conv2d(1, 16, kernel_size=(9, min(3, self.feature_dim)), stride=(2, 1), padding=(0, 0))
+                temp_conv2 = nn.Conv2d(16, 32, kernel_size=(7, min(3, self.feature_dim)), stride=(2, 1), padding=(0, 0))
+                temp_conv3 = nn.Conv2d(32, 64, kernel_size=(5, min(3, self.feature_dim)), stride=(2, 1), padding=(0, 0))
+                temp_conv4 = nn.Conv2d(64, 128, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0))
+
+            # Apply convolution layers
+            x = torch.relu(temp_conv1(dummy_input))
+            x = torch.relu(temp_conv2(x))
+            x = torch.relu(temp_conv3(x))
+            x = torch.relu(temp_conv4(x))
+
+            # Get final size
+            self.final_h = x.size(2)
+            self.final_w = x.size(3)
+
+    def forward(self, x):
+        # Get input size dynamically
+        batch_size = x.size(0)
+
+        # 1D convolution processing for ECL dataset
+        if self.feature_dim > 100:
+            # Unify input format: [batch, window, feature] -> [batch, 1, window*feature]
+            if len(x.shape) == 3:
+                x = x.view(batch_size, 1, x.size(1) * x.size(2))
+            elif len(x.shape) == 4:
+                x = x.view(batch_size, 1, x.size(1) * x.size(2))
+
+            # Debug: Check input for NaN
+            if torch.isnan(x).any():
+                print(f"NaN in ConvEncoder input: {x.shape}")
+
+            # Apply 1D convolution layers
+            x = self.act(self.bn1(self.conv1(x)))
+            if torch.isnan(x).any():
+                print(f"NaN after conv1: {x.shape}")
+
+            x = self.act(self.bn2(self.conv2(x)))
+            if torch.isnan(x).any():
+                print(f"NaN after conv2: {x.shape}")
+
+            x = self.act(self.bn3(self.conv3(x)))
+            if torch.isnan(x).any():
+                print(f"NaN after conv3: {x.shape}")
+
+            x = self.act(self.bn4(self.conv4(x)))
+            if torch.isnan(x).any():
+                print(f"NaN after conv4: {x.shape}")
+
+            # Final output (for 1D convolution)
+            z = self.conv_z(x).view(batch_size, self.output_dim)
+            if torch.isnan(z).any():
+                print(f"NaN in ConvEncoder output: {z.shape}")
+
+            return z
+        else:
+            # Normal 2D convolution processing
+            # Unify input format: [batch, window, feature] -> [batch, 1, window, feature]
+            if len(x.shape) == 3:
+                x = x.view(batch_size, 1, x.size(1), x.size(2))
+            elif len(x.shape) == 4:
+                if x.size(1) == 1:
+                    pass  # Already in correct format
+                else:
+                    x = x.view(batch_size, 1, x.size(1), x.size(2))
+
+            # Debug: Check input for NaN
+            if torch.isnan(x).any():
+                print(f"NaN in ConvEncoder input: {x.shape}")
+
+            # Apply convolution layers
+            x = self.act(self.bn1(self.conv1(x)))
+            if torch.isnan(x).any():
+                print(f"NaN after conv1: {x.shape}")
+
+            x = self.act(self.bn2(self.conv2(x)))
+            if torch.isnan(x).any():
+                print(f"NaN after conv2: {x.shape}")
+
+            x = self.act(self.bn3(self.conv3(x)))
+            if torch.isnan(x).any():
+                print(f"NaN after conv3: {x.shape}")
+
+            x = self.act(self.bn4(self.conv4(x)))
+            if torch.isnan(x).any():
+                print(f"NaN after conv4: {x.shape}")
+
+            # Final output
+            z = self.conv_z(x).view(batch_size, self.output_dim)
+            if torch.isnan(z).any():
+                print(f"NaN in ConvEncoder output: {z.shape}")
+
+            return z
+
+
+class ConvDecoder(nn.Module):
+    """
+    Generic ConvDecoder - supports arbitrary window size and feature count
+    output: [batch, window, feature]
+    """
+    def __init__(self, input_dim, window_size=100, feature_dim=1):
+        super(ConvDecoder, self).__init__()
+        self.input_dim = input_dim
+        self.window_size = window_size
+        self.feature_dim = feature_dim
+
+        # Determine intermediate size with same calculation as encoder
+        self._calculate_intermediate_size()
+
+        # More efficient architecture to handle large feature_dim
+        if feature_dim > 500:
+            # Efficient architecture for Traffic dataset (feature_dim > 500)
+            self.fc = nn.Linear(input_dim, 64 * self.intermediate_h * self.intermediate_w)
+
+            self.deconv1 = nn.ConvTranspose2d(64, 32, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0), output_padding=(1, 0))
+            self.bn1 = nn.BatchNorm2d(32)
+
+            self.deconv2 = nn.ConvTranspose2d(32, 16, kernel_size=(5, min(50, feature_dim//4)), stride=(2, 1), padding=(0, 0), output_padding=(1, 0))
+            self.bn2 = nn.BatchNorm2d(16)
+
+            self.deconv3 = nn.ConvTranspose2d(16, 8, kernel_size=(7, min(50, feature_dim//2)), stride=(2, 2), padding=(0, 0), output_padding=(1, 1))
+            self.bn3 = nn.BatchNorm2d(8)
+
+            self.deconv4 = nn.ConvTranspose2d(8, 1, kernel_size=(9, min(50, feature_dim)), stride=(2, 2), padding=(0, 0), output_padding=(1, 1))
+        elif feature_dim > 100:
+            # Intermediate architecture for ECL dataset (100 < feature_dim <= 500)
+            # Use safer deconvolution layers
+            self.fc = nn.Linear(input_dim, 128 * self.intermediate_h * self.intermediate_w)
+
+            self.deconv1 = nn.ConvTranspose2d(128, 64, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0), output_padding=(1, 0))
+            self.bn1 = nn.BatchNorm2d(64)
+
+            self.deconv2 = nn.ConvTranspose2d(64, 32, kernel_size=(5, 1), stride=(2, 1), padding=(0, 0), output_padding=(1, 0))
+            self.bn2 = nn.BatchNorm2d(32)
+
+            self.deconv3 = nn.ConvTranspose2d(32, 16, kernel_size=(7, 1), stride=(2, 1), padding=(0, 0), output_padding=(1, 0))
+            self.bn3 = nn.BatchNorm2d(16)
+
+            # Safer final layer (smaller kernel size)
+            self.deconv4 = nn.ConvTranspose2d(16, 1, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0), output_padding=(1, 0))
+        else:
+            # Normal architecture
+            self.fc = nn.Linear(input_dim, 128 * self.intermediate_h * self.intermediate_w)
+
+            self.deconv1 = nn.ConvTranspose2d(128, 64, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0), output_padding=(1, 0))
+            self.bn1 = nn.BatchNorm2d(64)
+
+            self.deconv2 = nn.ConvTranspose2d(64, 32, kernel_size=(5, min(3, feature_dim)), stride=(2, 1), padding=(0, 0), output_padding=(1, 0))
+            self.bn2 = nn.BatchNorm2d(32)
+
+            self.deconv3 = nn.ConvTranspose2d(32, 16, kernel_size=(7, min(3, feature_dim)), stride=(2, 1), padding=(0, 0), output_padding=(1, 0))
+            self.bn3 = nn.BatchNorm2d(16)
+
+            self.deconv4 = nn.ConvTranspose2d(16, 1, kernel_size=(9, min(3, feature_dim)), stride=(2, 1), padding=(0, 0), output_padding=(1, 0))
+
+        # Activation function
+        self.act = nn.ReLU(inplace=True)
+
+        # Adaptive pooling for size adjustment
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((window_size, feature_dim))
+
+    def _calculate_intermediate_size(self):
+        """Calculate actual intermediate size using dummy data"""
+        with torch.no_grad():
+            # Create dummy data: [1, 1, window_size, feature_dim]
+            dummy_input = torch.zeros(1, 1, self.window_size, self.feature_dim)
+
+            # Temporarily create same convolution layers as encoder
+            if self.feature_dim > 500:
+                temp_conv1 = nn.Conv2d(1, 8, kernel_size=(9, min(50, self.feature_dim)), stride=(2, 2), padding=(0, 0))
+                temp_conv2 = nn.Conv2d(8, 16, kernel_size=(7, min(50, self.feature_dim//2)), stride=(2, 2), padding=(0, 0))
+                temp_conv3 = nn.Conv2d(16, 32, kernel_size=(5, min(50, self.feature_dim//4)), stride=(2, 1), padding=(0, 0))
+                temp_conv4 = nn.Conv2d(32, 64, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0))
+            elif self.feature_dim > 100:
+                # Use more conservative kernel size and stride
+                temp_conv1 = nn.Conv2d(1, 16, kernel_size=(9, min(8, self.feature_dim//40)), stride=(2, 1), padding=(0, 0))
+                temp_conv2 = nn.Conv2d(16, 32, kernel_size=(7, min(8, self.feature_dim//40)), stride=(2, 1), padding=(0, 0))
+                temp_conv3 = nn.Conv2d(32, 64, kernel_size=(5, min(8, self.feature_dim//40)), stride=(2, 1), padding=(0, 0))
+                temp_conv4 = nn.Conv2d(64, 128, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0))
+            else:
+                temp_conv1 = nn.Conv2d(1, 16, kernel_size=(9, min(3, self.feature_dim)), stride=(2, 1), padding=(0, 0))
+                temp_conv2 = nn.Conv2d(16, 32, kernel_size=(7, min(3, self.feature_dim)), stride=(2, 1), padding=(0, 0))
+                temp_conv3 = nn.Conv2d(32, 64, kernel_size=(5, min(3, self.feature_dim)), stride=(2, 1), padding=(0, 0))
+                temp_conv4 = nn.Conv2d(64, 128, kernel_size=(3, 1), stride=(2, 1), padding=(0, 0))
+
+            # Apply convolution layers
+            x = torch.relu(temp_conv1(dummy_input))
+            x = torch.relu(temp_conv2(x))
+            x = torch.relu(temp_conv3(x))
+            x = torch.relu(temp_conv4(x))
+
+            # Get intermediate size
+            self.intermediate_h = x.size(2)
+            self.intermediate_w = x.size(3)
+
+    def forward(self, z):
+        batch_size = z.size(0)
+
+        # Debug: Check input for NaN
+        if torch.isnan(z).any():
+            print(f"NaN in ConvDecoder input: {z.shape}")
+
+        # Expand features with linear layer
+        x = self.fc(z)
+        if torch.isnan(x).any():
+            print(f"NaN after fc: {x.shape}")
+
+        # Adjust number of channels according to feature_dim
+        if self.feature_dim > 500:
+            x = x.view(batch_size, 64, self.intermediate_h, self.intermediate_w)
+        elif self.feature_dim > 100:
+            x = x.view(batch_size, 128, self.intermediate_h, self.intermediate_w)
+        else:
+            x = x.view(batch_size, 128, self.intermediate_h, self.intermediate_w)
+
+        if torch.isnan(x).any():
+            print(f"NaN after view: {x.shape}")
+
+        # Apply deconvolution layers
+        x = self.act(self.bn1(self.deconv1(x)))
+        if torch.isnan(x).any():
+            print(f"NaN after deconv1: {x.shape}")
+
+        x = self.act(self.bn2(self.deconv2(x)))
+        if torch.isnan(x).any():
+            print(f"NaN after deconv2: {x.shape}")
+
+        x = self.act(self.bn3(self.deconv3(x)))
+        if torch.isnan(x).any():
+            print(f"NaN after deconv3: {x.shape}")
+
+        # Execute safer deconvolution
+        try:
+            x = self.deconv4(x)
+            if torch.isnan(x).any():
+                print(f"NaN after deconv4: {x.shape}")
+        except Exception as e:
+            print(f"Error in deconv4: {e}")
+            # Fallback: Retry with smaller kernel size
+            try:
+                fallback_deconv = nn.ConvTranspose2d(16, 1, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0))
+                fallback_deconv = fallback_deconv.to(x.device)
+                x = fallback_deconv(x)
+                print("Used fallback deconvolution")
+            except Exception as e2:
+                print(f"Fallback also failed: {e2}")
+                # Final fallback: Return zero tensor
+                x = torch.zeros(x.size(0), 1, self.window_size, self.feature_dim, device=x.device)
+
+        # Adjust to exact size with adaptive pooling
+        try:
+            x = self.adaptive_pool(x)
+            if torch.isnan(x).any():
+                print(f"NaN after adaptive_pool: {x.shape}")
+        except Exception as e:
+            print(f"Error in adaptive_pool: {e}")
+            # Fallback: Resize
+            x = torch.nn.functional.interpolate(x, size=(self.window_size, self.feature_dim), mode='bilinear', align_corners=False)
+
+        return x
+
+
+# Keep existing encoders/decoders as is
 class ConvEncoder_60(nn.Module):
     def __init__(self, output_dim):
         super(ConvEncoder_60, self).__init__()
@@ -94,10 +459,10 @@ class ConvEncoder_336(nn.Module):
 class ConvDecoder_336(nn.Module):
     def __init__(self, input_dim):
         super(ConvDecoder_336, self).__init__()
-        # 初始扩展（高度1→4，宽度1→7）
+        # Initial expansion (height 1→4, width 1→7)
         self.conv1 = nn.ConvTranspose2d(input_dim, 512, (4,7), stride=1, padding=0)
 
-        # 高度扩展（4→16→64→256→512）
+        # Height expansion (4→16→64→256→512)
         self.conv2 = nn.ConvTranspose2d(512, 256, (4,1), stride=(4,1), padding=0)
         self.conv3 = nn.ConvTranspose2d(256, 128, (4,1), stride=(2,1), padding=0)
         self.conv4 = nn.ConvTranspose2d(128, 64, (4,1), stride=(5,1), padding=0)
@@ -114,19 +479,19 @@ class ConvDecoder_336(nn.Module):
     def forward(self, z):
         x = z.view(z.size(0), z.size(1), 1, 1)
 
-        # 第1层：1 → 4
+        # Layer 1: 1 → 4
         x = self.act(self.bn_layers[0](self.conv1(x)))  # [32,512,4,7]
 
-        # 第2层：4 → 16
+        # Layer 2: 4 → 16
         x = self.act(self.bn_layers[1](self.conv2(x)))  # [32,256,16,7]
 
-        # 第3层：16 → 64
+        # Layer 3: 16 → 64
         x = self.act(self.bn_layers[2](self.conv3(x)))  # [32,128,64,7]
 
-        # 第4层：64 → 256
+        # Layer 4: 64 → 256
         x = self.act(self.bn_layers[3](self.conv4(x)))  # [32,64,256,7]
 
-        # 第5层：256 → 512
+        # Layer 5: 256 → 512
         x = self.conv5(x)  # [32,1,512,7]
 
         return x
@@ -168,10 +533,10 @@ class ConvEncoder_512(nn.Module):
 class ConvDecoder_512(nn.Module):
     def __init__(self, input_dim):
         super(ConvDecoder_512, self).__init__()
-        # 初始扩展（高度1→4，宽度1→7）
+        # Initial expansion (height 1→4, width 1→7)
         self.conv1 = nn.ConvTranspose2d(input_dim, 512, (4,7), stride=1, padding=0)
 
-        # 高度扩展（4→16→64→256→512）
+        # Height expansion (4→16→64→256→512)
         self.conv2 = nn.ConvTranspose2d(512, 256, (4,1), stride=(4,1), padding=0)
         self.conv3 = nn.ConvTranspose2d(256, 128, (4,1), stride=(4,1), padding=0)
         self.conv4 = nn.ConvTranspose2d(128, 64, (4,1), stride=(4,1), padding=0)
@@ -188,19 +553,19 @@ class ConvDecoder_512(nn.Module):
     def forward(self, z):
         x = z.view(z.size(0), z.size(1), 1, 1)
 
-        # 第1层：1 → 4
+        # Layer 1: 1 → 4
         x = self.act(self.bn_layers[0](self.conv1(x)))  # [32,512,4,7]
 
-        # 第2层：4 → 16
+        # Layer 2: 4 → 16
         x = self.act(self.bn_layers[1](self.conv2(x)))  # [32,256,16,7]
 
-        # 第3层：16 → 64
+        # Layer 3: 16 → 64
         x = self.act(self.bn_layers[2](self.conv3(x)))  # [32,128,64,7]
 
-        # 第4层：64 → 256
+        # Layer 4: 64 → 256
         x = self.act(self.bn_layers[3](self.conv4(x)))  # [32,64,256,7]
 
-        # 第5层：256 → 512
+        # Layer 5: 256 → 512
         x = self.conv5(x)  # [32,1,512,7]
 
         return x
@@ -576,6 +941,58 @@ class ConvDecoder_Weather(nn.Module):
         self.conv4 = nn.ConvTranspose2d(64, 32, (4, 1), stride=(4,1), padding=(0,0))  # 32 x 9
         self.bn4 = nn.BatchNorm2d(32)
         self.conv5 = nn.ConvTranspose2d(32, 1, (2, 1), stride=(2,1), padding=(0,0))  # 64 x 9
+         # setup the non-linearity
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, z):
+        x = z.view(z.size(0), z.size(1), 1, 1)
+        x = self.act(self.bn1(self.conv1(x)))
+        x = self.act(self.bn2(self.conv2(x)))
+        x = self.act(self.bn3(self.conv3(x)))
+        x = self.act(self.bn4(self.conv4(x)))
+        mu_img = self.conv5(x)
+        return mu_img
+
+class ConvEncoder_Weather_336(nn.Module):
+    def __init__(self, output_dim):
+        super(ConvEncoder_Weather_336, self).__init__()
+        self.output_dim = output_dim
+
+        self.conv1 = nn.Conv2d(1, 32, (9, 2), stride=(3,1))
+
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 32, (7, 3), stride=(2,2))
+        self.bn2 = nn.BatchNorm2d(32)
+        self.conv3 = nn.Conv2d(32, 64, (5, 3), stride=(2,2))
+        self.bn3 = nn.BatchNorm2d(64)
+        self.conv4 = nn.Conv2d(64, 128, (2, 4), stride=(2,1))
+        self.bn4 = nn.BatchNorm2d(128)
+        self.conv_z = nn.Conv2d(128, output_dim, (19,1))
+
+        # setup the non-linearity
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = x.view(-1, 1, 336, 21)
+        x = self.act(self.bn1(self.conv1(x)))
+        x = self.act(self.bn2(self.conv2(x)))
+        x = self.act(self.bn3(self.conv3(x)))
+        x = self.act(self.bn4(self.conv4(x)))
+        z = self.conv_z(x).view(x.size(0), self.output_dim)
+        return z
+
+class ConvDecoder_Weather_336(nn.Module):
+    def __init__(self, input_dim):
+        super(ConvDecoder_Weather_336, self).__init__()
+        self.conv1 = nn.ConvTranspose2d(input_dim, 512, (4, 21), stride=(1, 1), padding=0)  # 2 x 9
+        self.bn1 = nn.BatchNorm2d(512)
+        self.conv2 = nn.ConvTranspose2d(512, 128, (4, 1), stride=(4,1), padding=(0,0))  # 8 x 9
+        self.bn2 = nn.BatchNorm2d(128)
+        self.conv3 = nn.ConvTranspose2d(128, 64, (4, 1), stride=(2,1), padding=(0,0))  # 16 x 9
+        self.bn3 = nn.BatchNorm2d(64)
+        self.conv4 = nn.ConvTranspose2d(64, 32, (4, 1), stride=(5,1), padding=(0,0))  # 32 x 9
+        self.bn4 = nn.BatchNorm2d(32)
+        self.conv5 = nn.ConvTranspose2d(32, 1, (2, 1), stride=(2,1), padding=(1,0))  # 64 x 9
          # setup the non-linearity
         self.act = nn.ReLU(inplace=True)
 

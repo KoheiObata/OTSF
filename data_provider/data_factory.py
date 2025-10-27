@@ -14,166 +14,127 @@ data_dict = {
     'custom_CI': Dataset_Custom_CI,
 }
 
-flag2num = {'train': 0, 'val': 1, 'test': 2, 'pred': 3}
-
 # =====================================
-# データセット・データローダ生成の工場関数群
+# Factory functions for dataset and dataloader generation
 # =====================================
 
-def get_dataset(args, flag, device='cpu', wrap_class=None, borders=None, take_post=0, take_pre=False, noise=0, **kwargs):
+def get_dataset(args, flag, setting, device='cpu', wrap_class=None, noise=0, **kwargs):
     """
-    指定された引数・フラグに基づき、適切なデータセットインスタンスを生成する関数。
-    wrap_classでデータセットのラッピングも可能。
+    Function to generate appropriate dataset instance based on specified arguments and flags.
+    Dataset wrapping is also possible with wrap_class.
 
     Parameters:
-        args: 実験やデータセットの各種設定を持つNamespace。
-        flag: 'train', 'val', 'test'のデータ分割の指定。
-        device: データを配置するデバイス。
-        wrap_class: データセットをラップするクラスまたはクラスのリスト。
-            例：wrap_class=[Dataset_Recent] のように指定すると、
-            生成したデータセットをDataset_Recentなどでラップし、
-            追加の前処理やバッチ生成ロジックを付与できる。
-            オンライン学習や特殊なデータ分割・加工が必要な場合に利用。
-        borders: データ分割の境界設定
-        take_post: 後方に追加で取得するデータポイント数
-        take_pre: 前方に追加で取得するデータポイント数
-        noise: ノイズの強度（0の場合はノイズなし）
-        その他: データセット生成に必要な追加パラメータ。
+        args: Namespace with various experiment and dataset settings.
+        flag: Data split specification: 'train', 'valid', 'test'.
+        setting: Dataset setting: 'online', 'offline_learn', 'offline_test'.
+        device: Device to place data on.
+        wrap_class: Class or list of classes to wrap dataset.
+            Example: Specifying wrap_class=[Dataset_Recent] wraps
+            generated dataset with Dataset_Recent etc.,
+            adding additional preprocessing or batch generation logic.
+            Used when online learning or special data splitting/processing is needed.
+        noise: Noise intensity (no noise if 0)
+        Other: Additional parameters needed for dataset generation.
 
     Returns:
-        データセットインスタンス
+        Dataset instance
     """
     # =====================================
-    # 1. 時間エンコーディング設定の初期化
+    # 1. Initialize time encoding settings
     # =====================================
-    # defaultではtimeenc=2になる
+    # By default, timeenc=2
     if not hasattr(args, 'timeenc'):
-        # timeencが設定されていない場合、embed設定に基づいて自動設定
-        # embed='timeF'の場合は時間特徴量を使用（timeenc=1）、それ以外は使用しない（timeenc=0）
+        # If timeenc is not set, auto-configure based on embed setting
+        # Use time features if embed='timeF' (timeenc=1), otherwise don't use (timeenc=0)
         args.timeenc = 0 if not hasattr(args, 'embed') or args.embed != 'timeF' else 1
 
     # =====================================
-    # 2. ラッパークラスの正規化
+    # 2. Normalize wrapper class
     # =====================================
-    # online_methodの場合，wrap_classが指定される(Dataset_Recent)
+    # For online_method, wrap_class is specified (Dataset_Recent)
     if wrap_class is not None:
         if not isinstance(wrap_class, list):
-            # 単一クラスの場合はリストに変換
+            # Convert to list if single class
             wrap_class = [wrap_class]
 
     # =====================================
-    # 3. データ境界（border）の設定
+    # 3. Generate dataset instance
     # =====================================
-    border = None
-    if borders is not None:
-        if flag == 'pred' and len(borders[0]) == 3:
-            # 予測フラグで3分割の場合、訓練データの範囲を使用
-            flag = 'train'
-            border = (borders[0][flag2num['train']], borders[1][flag2num['test']])
-        else:
-            # 通常の場合、指定されたフラグに対応する境界を使用
-            border = (borders[0][flag2num[flag]], borders[1][flag2num[flag]])
 
-        # 訓練以外のフラグ（val, test）の場合の特別処理
-        if flag != 'train':
-            if Dataset_Recent in wrap_class or take_pre > 0:
-                # Dataset_Recentが使用される場合やtake_preが設定されている場合
-                if take_pre > 1:
-                    # take_preが1より大きい場合、その分だけ前方に拡張
-                    start = border[0] - take_pre
-                else:
-                    # デフォルトでは予測長分だけ前方に拡張（オンライン学習用）
-                    start = border[0] - args.pred_len
-                # 開始位置が0未満にならないように調整
-                border = (max(0, start), border[1])
-
-        # take_postが設定されている場合、後方に拡張
-        if take_post > 0:
-            border = (border[0], border[1] + take_post)
-
-    # =====================================
-    # 4. データセットインスタンスの生成
-    # =====================================
-    # data_dictから適切なデータセットクラスを選択してインスタンス化
+    # Select appropriate dataset class from data_dict and instantiate
     data_set = data_dict[args.data](
-        root_path=args.root_path,      # データのルートパス
-        data_path=args.data_path,      # データファイルのパス
-        flag=flag,                     # データ分割フラグ
-        size=[args.seq_len, args.label_len, args.pred_len],  # シーケンス長、ラベル長、予測長
-        features=args.features,        # 特徴量設定（'M', 'S', 'MS'）
-        target=args.target,            # ターゲット変数名
-        timeenc=args.timeenc,          # 時間エンコーディング設定
-        freq=args.freq,                # 時間頻度（'h', 'd', 'm'など）
-        train_only=args.train_only,    # 訓練のみフラグ
-        border=border,                 # データ境界
-        borders=args.borders if hasattr(args, 'borders') else None,  # 全境界設定
-        ratio=args.ratio if hasattr(args, 'ratio') else None         # データ比率
+        root_path=args.root_path,      # Data root path
+        data_path=args.data_path,      # Data file path
+        flag=flag,                     # Data split flag (train, valid, test)
+        setting=setting,               # Dataset setting (online, offline_learn, offline_test)
+        size=[args.seq_len, args.label_len, args.pred_len],  # Sequence length, label length, prediction length
+        features=args.features,        # Feature setting ('M', 'S', 'MS')
+        target=args.target,            # Target variable name
+        timeenc=args.timeenc,          # Time encoding setting
+        freq=args.freq,                # Time frequency ('h', 'd', 'm', etc.)
+        border_type=args.border_type,  # Type of border setting
     )
 
     # =====================================
-    # 5. GPU固定（pin_gpu）の処理
+    # 4. GPU pinning (pin_gpu) processing
     # =====================================
     if args.pin_gpu and hasattr(data_set, 'data_x'):
-        # GPU固定が有効で、データセットにdata_x属性がある場合
-        # データをGPUに移動して固定
+        # If GPU pinning is enabled and dataset has data_x attribute
+        # Move data to GPU and pin
         data_set.data_x = torch.tensor(data_set.data_x, dtype=torch.float32, device=device)
         data_set.data_y = torch.tensor(data_set.data_y, dtype=torch.float32, device=device)
 
-        # 時間特徴量が必要なモデルの場合、data_stampもGPUに移動
+        # If model needs time features, also move data_stamp to GPU
         from settings import need_x_mark, need_x_y_mark
         if args.model in need_x_mark or args.model in need_x_y_mark or args.use_time or \
                 hasattr(args, 'online_method') and args.online_method == 'OneNet':
             data_set.data_stamp = torch.tensor(data_set.data_stamp, dtype=torch.float32, device=device)
 
     # =====================================
-    # 6. ノイズの追加（オプション）
+    # 5. Add noise (optional)
     # =====================================
     if noise:
         print("Modify time series with strength =", noise)
-        # 時系列データにノイズを追加
-        # 過去の値との差分に基づいてノイズを生成
+        # Add noise to time series data
+        # Generate noise based on difference from past values
         for i in range(3, len(data_set.data_y)):
-            # 入力データ（data_x）にノイズを追加
+            # Add noise to input data (data_x)
             data_set.data_x[i] += 0.01 * (i // noise) * (data_set.data_x[i-1] - data_set.data_x[i-2])
-            # 出力データ（data_y）にノイズを追加
+            # Add noise to output data (data_y)
             data_set.data_y[i] += 0.01 * (i // noise) * (data_set.data_y[i-1] - data_set.data_y[i-2])
 
     # =====================================
-    # 7. ラッパークラスの適用
+    # 6. Apply wrapper classes
     # =====================================
     if wrap_class is not None:
-        # 指定されたラッパークラスを順次適用
+        # Apply specified wrapper classes sequentially
         for cls in wrap_class:
             data_set = cls(data_set, **kwargs)
 
     # =====================================
-    # 8. 結果の出力と返却
+    # 7. Output and return result
     # =====================================
-    print(flag, len(data_set))  # フラグとデータセットの長さを出力
+    print(flag, setting, len(data_set))  # Output flag and dataset length
     return data_set
 
 
-def get_dataloader(data_set, args, flag, sampler=None):
+def get_dataloader(data_set, args, setting, sampler=None):
     """
-    データセットに対応するDataLoaderを生成する関数。
-    バッチサイズやシャッフル設定はargsとflagで制御。
+    Function to generate DataLoader corresponding to dataset.
+    Batch size and shuffle settings are controlled by args and flag.
     """
-    if flag == 'test':
-        shuffle_flag = False
-        drop_last = False
-        batch_size = args.batch_size
-    elif flag == 'pred':
-        shuffle_flag = False
-        drop_last = False
-        batch_size = args.batch_size
-    elif flag == 'online':
-        shuffle_flag = False
-        drop_last = False
-        batch_size = 1
-    else:
+    if setting == 'offline_learn':
         shuffle_flag = True
         drop_last = True
         batch_size = args.batch_size
+    elif setting == 'offline_test':
+        shuffle_flag = False
+        drop_last = False
+        batch_size = args.batch_size
+    elif setting == 'online':
+        shuffle_flag = False
+        drop_last = False
+        batch_size = 1
 
     data_loader = DataLoader(
         data_set,
@@ -182,17 +143,5 @@ def get_dataloader(data_set, args, flag, sampler=None):
         num_workers=args.num_workers,
         drop_last=drop_last,
         pin_memory=False,
-        sampler=sampler if args.local_rank == -1 or flag in ['online', 'test'] else DistributedSampler(data_set))
+        sampler=sampler if args.local_rank == -1 or setting in ['online', 'offline_test'] else DistributedSampler(data_set))
     return data_loader
-
-
-def data_provider(args, flag, device='cpu', wrap_class=None, sampler=None, **kwargs):
-    """
-    データセットとデータローダを同時に返すユーティリティ関数。
-    flagは'train', 'val', 'test'のいずれか
-    exp_basicでは_get_dataから，data_providerが呼ばれる．
-    exp_onlineではonlineから，get_dataset(flag='test')の後にget_dataloader(flag='online')が呼ばれる．
-    """
-    data_set = get_dataset(args, flag, device, wrap_class=wrap_class, **kwargs)
-    data_loader = get_dataloader(data_set, args, flag, sampler)
-    return data_set, data_loader

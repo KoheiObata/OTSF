@@ -1,0 +1,11 @@
+data="ETTh2 ETTm1 Weather ECLSelect TrafficSelect Traffic ECL ETTh2Select SynA3 SynB3"
+seq_len="336"
+pred_len="24 48 96"
+devices="0"
+forget_factor="1.0 0.99"
+update_batch="single"
+initial_train_batch="100"
+update_interval="1"
+iterations="3"
+
+bash scripts/online3test/LinearRLS/Online/onepath_Template.sh "$data" "$seq_len" "$pred_len" "$devices" "$forget_factor" "$update_batch" "$initial_train_batch" "$update_interval" "$iterations"

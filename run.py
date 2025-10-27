@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-リファクタリング版の実験実行スクリプト
-引数定義の改善版 - カテゴリ別に整理して可読性を向上
-"""
 
 import argparse
 import datetime
@@ -22,12 +18,11 @@ from data_provider import data_loader
 from exp import *
 import exp as exps
 from exp.exp_online import Exp_Online
-from exp.exp_solid import Exp_SOLID
 from settings import data_settings
 
 
 def str_to_bool(value):
-    """文字列をブール値に変換するヘルパー関数"""
+    """Helper function to convert string to boolean value"""
     if isinstance(value, bool):
         return value
     if value.lower() in {'false', 'f', '0', 'no', 'n'}:
@@ -38,45 +33,44 @@ def str_to_bool(value):
 
 
 def setup_argument_parser():
-    """構造化された引数解析器を作成"""
+    """Create a structured argument parser"""
     parser = argparse.ArgumentParser(description='Online Time Series Forecasting')
 
     # =====================================
-    # 基本設定
+    # Basic Configuration
     # =====================================
     basic_group = parser.add_argument_group('Basic Configuration')
-    basic_group.add_argument('--train_only', action='store_true', default=False,
-                            help='perform training on full input dataset without validation and testing')
-    basic_group.add_argument('--wo_test', action='store_true', default=False, help='only valid, not test')
-    basic_group.add_argument('--wo_valid', action='store_true', default=False, help='only test')
-    basic_group.add_argument('--only_test', action='store_true', default=False)
-    basic_group.add_argument('--do_valid', action='store_true', default=False)
-    basic_group.add_argument('--model', type=str, required=True, default='PatchTST')
+    basic_group.add_argument('--train', action='store_true', default=False, help='perform training')
+    basic_group.add_argument('--valid', action='store_true', default=False, help='perform validation during training')
+    basic_group.add_argument('--test', action='store_true', default=False, help='perform test after training')
+
     basic_group.add_argument('--override_hyper', action='store_true', default=True, help='Override hyperparams by setting.py')
     basic_group.add_argument('--compile', action='store_true', default=False, help='Compile the model by Pytorch 2.0')
-    basic_group.add_argument('--reduce_bs', type=str_to_bool, default=False,
-                            help='Override batch_size in hyperparams by setting.py')
+    basic_group.add_argument('--reduce_bs', type=str_to_bool, default=False, help='Override batch_size in hyperparams by setting.py')
+    basic_group.add_argument('--model', type=str, required=True, default='PatchTST')
     basic_group.add_argument('--normalization', type=str, default=None)
-    basic_group.add_argument('--checkpoints', type=str, default='./checkpoints/', help='location of model checkpoints')
-    basic_group.add_argument('--tag', type=str, default='')
+    basic_group.add_argument('--skip', action='store_true', default=False, help='skip the experiment')
+    basic_group.add_argument('--savepath', type=str, default='./results/', help='location of results')
 
     # =====================================
-    # オンライン学習設定
+    # Online Learning Configuration
     # =====================================
     online_group = parser.add_argument_group('Online Learning')
+    online_group.add_argument('--checkpoints', type=str, default=None, help='location of model checkpoints')
+    online_group.add_argument('--online_train', action='store_true', default=False, help='perform online learning using train set')
+    online_group.add_argument('--online_valid', action='store_true', default=False, help='perform online learning using valid set')
+    online_group.add_argument('--online_test', action='store_true', default=False, help='perform online learning using test set')
+
     online_group.add_argument('--online_method', type=str, default=None)
-    online_group.add_argument('--skip', type=str, default=None)
     online_group.add_argument('--online_learning_rate', type=float, default=None)
-    online_group.add_argument('--val_online_lr', action='store_true', default=True)
-    online_group.add_argument('--diff_online_lr', action='store_true', default=False)
     online_group.add_argument('--save_opt', action='store_true', default=True)
     online_group.add_argument('--leakage', action='store_true', default=False)
-    online_group.add_argument('--debug', action='store_true', default=False)
-    online_group.add_argument('--pretrain', action='store_true', default=False)
     online_group.add_argument('--freeze', action='store_true', default=False)
+    online_group.add_argument('--enable_detailed_metrics', action='store_true', default=False, help='enable detailed metrics collection during online learning')
+    online_group.add_argument('--save_prediction', action='store_true', default=False, help='save predictions for each timestep during online learning')
 
     # =====================================
-    # Proceed手法設定
+    # Proceed Method Configuration
     # =====================================
     proceed_group = parser.add_argument_group('Proceed Method')
     proceed_group.add_argument('--act', type=str, default='sigmoid', help='activation')
@@ -92,24 +86,38 @@ def setup_argument_parser():
     proceed_group.add_argument('--wo_clip', action='store_true', default=False)
 
     # =====================================
-    # OneNet手法設定
+    # ER, DERpp Method Configuration
+    # =====================================
+    er_group = parser.add_argument_group('ER, DERpp Method')
+    er_group.add_argument('--ER_alpha', type=float, default=0.2, help='weight for ER and DERpp')
+    er_group.add_argument('--ER_beta', type=float, default=0.2, help='weight for DERpp')
+
+    # =====================================
+    # EWC Method Configuration
+    # =====================================
+    ewc_group = parser.add_argument_group('EWC Method')
+    ewc_group.add_argument('--ewc_lambda', type=float, default=1.0, help='weight for EWC')
+
+    # =====================================
+    # OneNet Method Configuration
     # =====================================
     onenet_group = parser.add_argument_group('OneNet Method')
     onenet_group.add_argument('--learning_rate_w', type=float, default=0.001, help='optimizer learning rate')
     onenet_group.add_argument('--learning_rate_bias', type=float, default=0.001, help='optimizer learning rate')
 
     # =====================================
-    # SOLID手法設定
+    # SOLID Method Configuration
     # =====================================
     solid_group = parser.add_argument_group('SOLID Method')
-    solid_group.add_argument('--lambda_period', type=float, default=0.1) # 周期性のthreshold
-    solid_group.add_argument('--whole_model', action='store_true') #Trueにすることで，model全体を更新する(freeze=False)
+    solid_group.add_argument('--lambda_period', type=float, default=0.1) # threshold for periodicity
+    solid_group.add_argument('--whole_model', action='store_true') # set True to update entire model (freeze=False)
     solid_group.add_argument('--continual', action='store_true')
 
     # =====================================
-    # BTOA手法設定
+    # BTOA Method Configuration
     # =====================================
     btoa_group = parser.add_argument_group('BTOA Method')
+    btoa_group.add_argument('--savevae', default='ETTh1', type=str)
     btoa_group.add_argument('-dist', default='normal', type=str, choices=['normal', 'laplace', 'flow'])
     btoa_group.add_argument('-n', '--num-epochs', default=100, type=int, help='number of training epochs')
     btoa_group.add_argument('--VAE_learning_rate', default=2e-3, type=float, help='VAE learning rate')
@@ -121,54 +129,84 @@ def setup_argument_parser():
     btoa_group.add_argument('--lambda-anneal', action='store_true')
     btoa_group.add_argument('--mss', action='store_true', help='use the improved minibatch estimator')
     btoa_group.add_argument('--conv', action='store_true')
-    btoa_group.add_argument('--save', type=str, default='ETTh2')
     btoa_group.add_argument('--log_freq', default=200, type=int, help='num iterations per log')
     btoa_group.add_argument('--mean', type=float, default=0.9, help='Mean of Gaussian')
     btoa_group.add_argument('--std', type=float, default=0.1, help='std of Gaussian')
     btoa_group.add_argument('--low_limit', type=float, default=0.7, help='low limit of Gaussian')
     btoa_group.add_argument('--high_limit', type=float, default=1, help='high limit of Gaussian')
-    btoa_group.add_argument('--aug1', type=str, default='na',
-                        choices=['na', 'noise', 'scale', 'negate', 'perm', 'shuffle', 't_flip', 't_warp', 'resample', 'random_out','rotation', 'perm_jit', 'jit_scal', 'hfc', 'lfc', 'p_shift', 'ap_p', 'ap_f'],
-                        help='the type of augmentation transformation')
-    btoa_group.add_argument('--aug2', type=str, default='resample',
-                        choices=['na', 'noise', 'scale', 'negate', 'perm', 'shuffle', 't_flip', 't_warp', 'resample', 'random_out', 'rotation', 'perm_jit', 'jit_scal', 'hfc', 'lfc', 'p_shift', 'ap_p', 'ap_f'],
-                        help='the type of augmentation transformation')
+    btoa_group.add_argument('--aug1', type=str, default='na', choices=['na', 'noise', 'scale', 'negate', 'perm', 'shuffle', 't_flip', 't_warp', 'resample', 'random_out','rotation', 'perm_jit', 'jit_scal', 'hfc', 'lfc', 'p_shift', 'ap_p', 'ap_f'], help='the type of augmentation transformation')
+    btoa_group.add_argument('--aug2', type=str, default='resample', choices=['na', 'noise', 'scale', 'negate', 'perm', 'shuffle', 't_flip', 't_warp', 'resample', 'random_out', 'rotation', 'perm_jit', 'jit_scal', 'hfc', 'lfc', 'p_shift', 'ap_p', 'ap_f'], help='the type of augmentation transformation')
 
     # =====================================
-    # Buffer設定 (SOLIDpp, BTOA, ER, DERpp)
+    # Proposed Method Configuration
+    # =====================================
+    proposed_group = parser.add_argument_group('Proposed Method')
+    proposed_group.add_argument('--aug_method', type=str, default='mixbuff', choices=['mixbuff', 'nothing', 'noise', 'noisehalf', 'fft', 'btoa', 'mixseq'])
+    proposed_group.add_argument('--max_lag', type=str, default='-period')
+    proposed_group.add_argument('--min_lag', type=str, default='-seq_len+1')
+    proposed_group.add_argument('--base_ratio_start', type=float, default=0.5)
+    proposed_group.add_argument('--base_ratio_end', type=float, default=0.5)
+    proposed_group.add_argument('--base_seq', type=str, default='buff', choices=['buff', 'seq'])
+    proposed_group.add_argument('--detrend', action='store_true') # set True to update entire model (freeze=False)
+    proposed_group.add_argument('--add_recent', type=str_to_bool, default=False)
+    proposed_group.add_argument('--period', default=None, type=int, help='period')
+    proposed_group.add_argument('--aug_ratio', type=float, default=0.5)
+
+    # =====================================
+    # RLS Method Configuration
+    # =====================================
+    rls_group = parser.add_argument_group('RLS')
+    rls_group.add_argument('--forget_factor', type=float, default=0.99)
+    rls_group.add_argument('--update_batch', type=str, default='single', choices=['multiple', 'single'])
+    rls_group.add_argument('--initial_train_batch', default=100, type=int, help='initial_train_batch')
+    rls_group.add_argument('--update_interval', default=1, type=int, help='update_interval')
+    rls_group.add_argument('--predictor_label_path', type=str, default=None, help='location of predictor label')
+
+    # =====================================
+    # Power Method Configuration
+    # =====================================
+    power_group = parser.add_argument_group('Power')
+    power_group.add_argument('--far_forget_rate', type=float, default=1.00)
+    power_group.add_argument('--far_lambda_0', type=float, default=1.00)
+    power_group.add_argument('--fft_bins', type=int, default=14)
+    power_group.add_argument('--power_norm_method', type=str, default='zscore', choices=['l1', 'l2', 'minmax', 'zscore', 'log', 'none'])
+    power_group.add_argument('--target_modules', type=str, default='all', help='comma-separated list of target module names (e.g., "module.model.head.linear,linear")')
+    power_group.add_argument('--freeze_untarget', action='store_true', default=False, help='freeze untargeted parameters')
+    power_group.add_argument('--grad_scale', type=str, default='direct', choices=['direct', 'normalize', 'softmax', 'stepnorm', 'negative'])
+    power_group.add_argument('--update_affinity_after', action='store_true', default=False, help='update affinity matrix')
+    power_group.add_argument('--new_optimizer', action='store_true', default=False, help='use new optimizer')
+    power_group.add_argument('--noisetrain', type=int, default=0)
+
+    # =====================================
+    # Buffer Configuration (SOLIDpp, BTOA, ER, DERpp, DSOF, Proposed)
     # =====================================
     buffer_group = parser.add_argument_group('Buffer Configuration')
-    buffer_group.add_argument('--mini_batch', type=int, default=15, help='mini_batch')
+    buffer_group.add_argument('--mini_batch', type=int, default=5, help='mini_batch')
     buffer_group.add_argument('--buffer_size', type=int, default=100, help='buffer_size')
 
     # =====================================
-    # データ設定
+    # Data Configuration
     # =====================================
     data_group = parser.add_argument_group('Data Configuration')
     data_group.add_argument('--border_type', type=str, default='online', help='set any other value for traditional data splits')
     data_group.add_argument('--root_path', type=str, default='./dataset/', help='root path of the data file')
     data_group.add_argument('--dataset', type=str, default='ETTh1', help='data file')
-    data_group.add_argument('--features', type=str, default='M',
-                           help='forecasting task, options:[M, S, MS]; M:multivariate predict multivariate, S:univariate predict univariate, MS:multivariate predict univariate')
+    data_group.add_argument('--features', type=str, default='M', help='forecasting task, options:[M, S, MS]; M:multivariate predict multivariate, S:univariate predict univariate, MS:multivariate predict univariate')
     data_group.add_argument('--target', type=str, default='OT', help='target feature in S or MS task')
-    data_group.add_argument('--freq', type=str, default='h',
-                           help='freq for time features encoding, options:[s:secondly, t:minutely, h:hourly, d:daily, b:business days, w:weekly, m:monthly], you can also use more detailed freq like 15min or 3h')
-    data_group.add_argument('--wrap_data_class', type=list, default=[])
-    data_group.add_argument('--pin_gpu', type=str_to_bool, default=True)
+    data_group.add_argument('--freq', type=str, default='h', help='freq for time features encoding, options:[s:secondly, t:minutely, h:hourly, d:daily, b:business days, w:weekly, m:monthly], you can also use more detailed freq like 15min or 3h')
     data_group.add_argument('--use_time', action='store_true', default=False, help='use time features or not')
 
     # =====================================
-    # 予測タスク設定
+    # Forecasting Task Configuration
     # =====================================
     forecasting_group = parser.add_argument_group('Forecasting Task')
     forecasting_group.add_argument('--seq_len', type=int, default=96, help='input sequence length')
     forecasting_group.add_argument('--label_len', type=int, default=48, help='start token length')
     forecasting_group.add_argument('--pred_len', type=int, default=96, help='prediction sequence length')
-    forecasting_group.add_argument('--individual', action='store_true', default=False,
-                                  help='DLinear: a linear layer for each variate(channel) individually')
+    forecasting_group.add_argument('--individual', action='store_true', default=False, help='DLinear: a linear layer for each variate(channel) individually')
 
     # =====================================
-    # PatchTST設定
+    # PatchTST Configuration
     # =====================================
     patchtst_group = parser.add_argument_group('PatchTST Configuration')
     patchtst_group.add_argument('--fc_dropout', type=float, default=0.05, help='fully connected dropout')
@@ -184,11 +222,10 @@ def setup_argument_parser():
     patchtst_group.add_argument('--drop_last', action='store_true', default=False)
 
     # =====================================
-    # Transformer系設定
+    # Transformer Configuration
     # =====================================
     transformer_group = parser.add_argument_group('Transformer Configuration')
-    transformer_group.add_argument('--embed_type', type=int, default=0,
-                                  help='0: default 1: value embedding + temporal embedding + positional embedding 2: value embedding + temporal embedding 3: value embedding + positional embedding 4: value embedding')
+    transformer_group.add_argument('--embed_type', type=int, default=0, help='0: default 1: value embedding + temporal embedding + positional embedding 2: value embedding + temporal embedding 3: value embedding + positional embedding 4: value embedding')
     transformer_group.add_argument('--d_model', type=int, default=512, help='dimension of model')
     transformer_group.add_argument('--n_heads', type=int, default=8, help='num of heads')
     transformer_group.add_argument('--e_layers', type=int, default=2, help='num of encoder layers')
@@ -196,19 +233,16 @@ def setup_argument_parser():
     transformer_group.add_argument('--d_ff', type=int, default=2048, help='dimension of fcn')
     transformer_group.add_argument('--moving_avg', type=int, default=25, help='window size of moving average')
     transformer_group.add_argument('--factor', type=int, default=3, help='attn factor')
-    transformer_group.add_argument('--distil', action='store_false',
-                                  help='whether to use distilling in encoder, using this argument means not using distilling',
-                                  default=True)
+    transformer_group.add_argument('--distil', action='store_false', help='whether to use distilling in encoder, using this argument means not using distilling', default=True)
     transformer_group.add_argument('--dropout', type=float, default=0.05, help='dropout')
-    transformer_group.add_argument('--embed', type=str, default='timeF',
-                                  help='time features encoding, options:[timeF, fixed, learned]')
+    transformer_group.add_argument('--embed', type=str, default='timeF', help='time features encoding, options:[timeF, fixed, learned]')
     transformer_group.add_argument('--activation', type=str, default='gelu', help='activation')
     transformer_group.add_argument('--output_attention', action='store_true', help='whether to output attention in encoder')
     transformer_group.add_argument('--output_enc', action='store_true', help='whether to output embedding from encoder')
     transformer_group.add_argument('--do_predict', action='store_true', help='whether to predict unseen future data')
 
     # =====================================
-    # Crossformer設定
+    # Crossformer Configuration
     # =====================================
     crossformer_group = parser.add_argument_group('Crossformer Configuration')
     crossformer_group.add_argument('--seg_len', type=int, default=24, help='segment length (L_seg)')
@@ -216,7 +250,7 @@ def setup_argument_parser():
     crossformer_group.add_argument('--num_routers', type=int, default=10, help='num of routers in Cross-Dimension Stage of TSA (c)')
 
     # =====================================
-    # その他モデル設定
+    # Other Model Configuration
     # =====================================
     other_models_group = parser.add_argument_group('Other Model Configuration')
     other_models_group.add_argument('--class_strategy', type=str, default='projection', help='projection/average/cls_token')
@@ -227,7 +261,7 @@ def setup_argument_parser():
     other_models_group.add_argument('--patch_size', type=int, default=16)
 
     # =====================================
-    # 最適化設定
+    # Optimization Configuration
     # =====================================
     optimization_group = parser.add_argument_group('Optimization')
     optimization_group.add_argument('--num_workers', type=int, default=0, help='data loader num workers')
@@ -246,26 +280,27 @@ def setup_argument_parser():
     optimization_group.add_argument('--warmup_epochs', type=int, default=5)
 
     # =====================================
-    # GPU設定
+    # GPU Configuration
     # =====================================
     gpu_group = parser.add_argument_group('GPU Configuration')
-    gpu_group.add_argument('--use_gpu', type=str_to_bool, default=True, help='use gpu')
-    gpu_group.add_argument('--gpu', type=int, default=0, help='gpu')
-    gpu_group.add_argument('--use_multi_gpu', action='store_true', help='use multiple gpus', default=False)
-    gpu_group.add_argument('--devices', type=str, default='0,1,2,3', help='device ids of multile gpus')
-    gpu_group.add_argument('--test_flop', action='store_true', default=False, help='See utils/tools for usage')
-    gpu_group.add_argument("--local-rank", default=os.getenv('LOCAL_RANK', -1), type=int)
+    gpu_group.add_argument('--use_gpu', type=str_to_bool, default=True, help='specify whether to use GPU (True/False)')
+    gpu_group.add_argument('--gpu', type=int, default=0, help='GPU device ID to use (0, 1, 2, ...)')
+    gpu_group.add_argument('--use_multi_gpu', action='store_true', help='use multiple GPUs for parallel processing', default=False)
+    gpu_group.add_argument('--devices', type=str, default='0,1,2,3', help='device ID list for multi-GPU usage (comma-separated)')
+    gpu_group.add_argument('--pin_gpu', type=str_to_bool, default=True, help='whether to pin GPU memory (speeds up memory transfer)')
+    gpu_group.add_argument('--test_flop', action='store_true', default=False, help='run FLOPs (floating point operations) test (see utils/tools)')
+    gpu_group.add_argument("--local-rank", default=os.getenv('LOCAL_RANK', -1), type=int, help='local rank for distributed training (-1: single GPU, 0+: distributed)')
 
 
     return parser
 
 
 # =====================================
-# GPU管理クラス
+# GPU Manager Class
 # =====================================
 
 class GPUManager:
-    """GPU設定・管理を担当するクラス"""
+    """Class responsible for GPU configuration and management"""
 
     def __init__(self, args):
         self.args = args
@@ -273,35 +308,45 @@ class GPUManager:
         self._setup_gpu_config()
 
     def _setup_gpu_config(self):
-        """GPU設定の初期化"""
-        # GPU使用可能かチェック
+        """Initialize GPU configuration"""
+        # Check if GPU is available
         self.args.use_gpu = True if torch.cuda.is_available() and self.args.use_gpu else False
 
-        # Windows環境でのメモリ制限設定
+        # Check number of available GPUs
+        if self.args.use_gpu:
+            available_gpus = torch.cuda.device_count()
+            if available_gpus == 0:
+                print("Warning: CUDA is available but no GPU devices found. Using CPU.")
+                self.args.use_gpu = False
+            elif self.args.gpu >= available_gpus:
+                print(f"Warning: GPU {self.args.gpu} is not available. Using GPU 0 instead.")
+                self.args.gpu = 0
+
+        # Memory limit settings for Windows environment
         if self.platform == 'Windows':
             self._setup_windows_memory_limit()
 
-        # マルチGPU設定
+        # Multi-GPU configuration
         if self.args.use_gpu and self.args.use_multi_gpu:
             self._setup_multi_gpu()
 
-        # 分散学習設定
+        # Distributed training configuration
         if self.args.local_rank != -1:
             self._setup_distributed_training()
 
     def _setup_windows_memory_limit(self):
-        """Windows環境でのGPUメモリ制限設定"""
+        """GPU memory limit settings for Windows environment"""
         torch.cuda.set_per_process_memory_fraction(48 / 61, 0)
 
     def _setup_multi_gpu(self):
-        """マルチGPU設定"""
+        """Multi-GPU configuration"""
         self.args.devices = self.args.devices.replace(' ', '')
         device_ids = self.args.devices.split(',')
         self.args.device_ids = [int(id_) for id_ in device_ids]
         self.args.gpu = self.args.device_ids[0]
 
     def _setup_distributed_training(self):
-        """分散学習設定"""
+        """Distributed training configuration"""
         torch.cuda.set_device(self.args.local_rank)
         self.args.gpu = self.args.local_rank
         torch.distributed.init_process_group(backend="nccl", init_method='env://')
@@ -309,18 +354,19 @@ class GPUManager:
         self.args.batch_size = self.args.batch_size // self.args.num_gpus
 
     def setup_seed(self, seed):
-        """GPU対応のシード設定"""
+        """Seed setup for GPU"""
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
         np.random.seed(seed)
         random.seed(seed)
 
     def clear_cache(self):
-        """GPUキャッシュのクリア"""
+        """Clear GPU cache"""
         torch.cuda.empty_cache()
+        gc.collect()
 
     def get_device_info(self):
-        """デバイス情報を取得"""
+        """Get device information"""
         if self.args.use_gpu:
             return f"GPU {self.args.gpu}" if not self.args.use_multi_gpu else f"GPUs {self.args.devices}"
         else:
@@ -328,167 +374,31 @@ class GPUManager:
 
 
 # =====================================
-# パス管理クラス
-# =====================================
-
-class PathManager:
-    """パス生成・管理を担当するクラス"""
-
-    def __init__(self, args):
-        self.args = args
-        self.platform = platform.system()
-        self._setup_base_paths()
-
-    def _setup_base_paths(self):
-        """基本パスの設定"""
-        if self.platform != 'Windows':
-            self.base_path = './'
-            self.checkpoints_base = './checkpoints/'
-            self.results_base = './results/'
-        else:
-            self.base_path = 'D:/data/'
-            self.checkpoints_base = 'D:/checkpoints/'
-            self.results_base = './results/'
-
-        # Windowsの場合、checkpointsパスを上書き
-        if self.platform == 'Windows' and self.args.checkpoints:
-            self.args.checkpoints = self.checkpoints_base
-
-    def get_data_path(self):
-        """データパスを取得"""
-        return data_settings[self.args.dataset]['data']
-
-    def get_checkpoint_path(self, setting):
-        """チェックポイントパスを生成"""
-        return os.path.join(self.args.checkpoints, setting, 'checkpoint.pth')
-
-    def get_pretrain_paths(self, pretrain_setting):
-        """プリトレーニング用パスを生成"""
-        pred_path = os.path.join(self.results_base, pretrain_setting, 'real_prediction.npy')
-
-        if self.platform == 'Windows':
-            load_path = os.path.join(self.checkpoints_base, pretrain_setting, 'checkpoint.pth')
-        else:
-            load_path = os.path.join('./checkpoints/', pretrain_setting, 'checkpoint.pth')
-
-        return pred_path, load_path
-
-    def get_fsnet_path(self, fsnet_name, iteration):
-        """FSNet用パスを生成"""
-        return f'./checkpoints/{self.args.dataset}_60_{self.args.pred_len}_{fsnet_name}_' \
-               f'online_ftM_sl60_ll48_pl{self.args.pred_len}_lr{settings.pretrain_lr_online_dict[fsnet_name][self.args.dataset]}' \
-               f'_uniFalse_dm512_nh8_el2_dl1_df2048_fc3_ebtimeF_dtTrue_test_{iteration}/checkpoint.pth'
-
-    def get_setting_name(self, flag, iteration):
-        """実験設定名を生成"""
-        return '{}_{}_ft{}_sl{}_ll{}_pl{}_lr{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
-            self.args.model_id,
-            flag,
-            self.args.features,
-            self.args.seq_len,
-            self.args.label_len,
-            self.args.pred_len,
-            self.args.learning_rate,
-            self.args.d_model,
-            self.args.n_heads,
-            self.args.e_layers,
-            self.args.d_layers,
-            self.args.d_ff,
-            self.args.factor,
-            self.args.embed,
-            self.args.distil,
-            self.args.des,
-            iteration)
-
-    def get_pretrain_setting_name(self, pretrain_lr, iteration):
-        """プリトレーニング設定名を生成"""
-        return '{}_{}_ft{}_sl{}_ll{}_pl{}_lr{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
-            self.args.model_id,
-            self.args.border_type if self.args.border_type else self.args.data,
-            self.args.features,
-            self.args.seq_len,
-            self.args.label_len,
-            self.args.pred_len,
-            pretrain_lr,
-            self.args.d_model,
-            self.args.n_heads,
-            self.args.e_layers,
-            self.args.d_layers,
-            self.args.d_ff,
-            self.args.factor,
-            self.args.embed,
-            self.args.distil,
-            self.args.des,
-            iteration)
-
-    def generate_flag(self):
-        """
-        flagを生成（実験設定に基づいて設定名の一部を生成）
-
-        Returns:
-            str: 生成されたflag
-        """
-        if self.args.online_method:
-            flag = self.args.online_method.lower()
-            if not self.args.border_type:
-                if self.args.online_method == 'Online':
-                    flag = self.args.data
-                    self.args.checkpoints = ""
-                else:
-                    flag = self.args.data + '_' + flag
-
-            if flag == 'fsnet':
-                flag = 'online'
-
-            if 'proceed' in flag:
-                if not self.args.freeze:
-                    flag += "_fulltune"
-                if not self.args.pretrain:
-                    flag += "_new"
-                flag += f"_{self.args.lradj}"
-                flag += f'_{self.args.tune_mode}_btl{self.args.bottleneck_dim}_ema{self.args.ema}'
-                if self.args.concept_dim:
-                    flag += f'_mid{self.args.concept_dim}'
-                if not self.args.individual_generator:
-                    flag += '_share'
-                if self.args.share_encoder:
-                    flag += '_share_enc'
-                if self.args.wo_clip:
-                    flag += '_noclip'
-        else:
-            flag = self.args.border_type if self.args.border_type else self.args.data
-
-        return flag
-
-
-# =====================================
-# モデル管理クラス
+# Model Manager Class
 # =====================================
 
 class ModelManager:
-    """モデル固有の処理を担当するクラス"""
+    """Class responsible for model-specific processing"""
 
     def __init__(self, args):
         self.args = args
         self._setup_model_config()
+        self.setup_online_method_config()
 
     def _setup_model_config(self):
-        """モデル設定の初期化"""
-        # Ensemble設定の処理
+        """Initialize model configuration"""
+        # Process Ensemble settings
         self._handle_ensemble_config()
 
-        # Leakage設定の処理
+        # Process Leakage settings
         self._handle_leakage_config()
 
-        # モデル固有の設定
-        self._setup_model_specific_config()
-
-        # モデルIDの生成
+        # Generate model ID
         self._generate_model_id()
 
     def _handle_ensemble_config(self):
-        """Ensemble設定の処理"""
-        # TCNとFSNet以外のmodelに対してはEnsembleを名前から削除
+        """Process Ensemble settings"""
+        # Remove Ensemble from name for models other than TCN and FSNet
         if self.args.model.endswith('_Ensemble') and 'TCN' not in self.args.model and 'FSNet' not in self.args.model:
             self.args.model = self.args.model[:-len('_Ensemble')]
             self.args.ensemble = True
@@ -496,7 +406,7 @@ class ModelManager:
             self.args.ensemble = False
 
     def _handle_leakage_config(self):
-        """Leakage設定の処理"""
+        """Process Leakage settings"""
         if self.args.model.endswith('_leak'):
             self.args.model = self.args.model[:-len('_leak')]
             self.args.leakage = True
@@ -505,44 +415,9 @@ class ModelManager:
             self.args.online_method = self.args.online_method[:-len('_leak')]
             self.args.leakage = True
 
-    def _setup_model_specific_config(self):
-        """モデル固有の設定"""
-        # GPT4TS固有の設定
-        if self.args.model.startswith('GPT4TS'):
-            self._setup_gpt4ts_config()
-
-        # MTGNN固有の設定
-        if self.args.model in ['MTGNN']:
-            self._setup_mtgnn_config()
-
-        # 特殊な最適化設定
-        if self.args.model in settings.need_x_mark:
-            self.args.optim = 'AdamW'
-            self.args.patience = 3
-
-        # 未使用パラメータの設定
-        self.args.find_unused_parameters = self.args.model in ['MTGNN']
-
-    def _setup_gpt4ts_config(self):
-        """GPT4TS固有の設定"""
-        if not self.args.online_method and not self.args.do_predict:
-            self.args.data += '_CI'
-        else:
-            if self.args.dataset == 'ECL':
-                self.args.batch_size = min(self.args.batch_size, 3)
-            elif self.args.dataset == 'Traffic':
-                self.args.batch_size = 1
-
-    def _setup_mtgnn_config(self):
-        """MTGNN固有の設定"""
-        if 'feat_dim' in data_settings[self.args.dataset]:
-            self.args.in_dim = data_settings[self.args.dataset]['feat_dim']
-            self.args.enc_in = int(self.args.enc_in / self.args.in_dim)
-            if self.args.features == 'M':
-                self.args.c_out = int(self.args.c_out / self.args.in_dim)
 
     def _generate_model_id(self):
-        """モデルIDの生成"""
+        """Generate model ID"""
         self.args.model_id = f'{self.args.dataset}_{self.args.seq_len}_{self.args.pred_len}_{self.args.model}'
         if self.args.normalization is not None:
             self.args.model_id += '_' + self.args.normalization
@@ -550,70 +425,27 @@ class ModelManager:
             self.args.model_id += '_' + 'dc1'
 
     def setup_online_method_config(self):
-        """オンライン手法の設定"""
+        """Configure online method settings"""
         if not self.args.online_method:
             return
 
+        self.args.patience = min(self.args.patience, 3)
         self.args.train_epochs = min(self.args.train_epochs, 25)
         self.args.save_opt = True
 
-        # FSNet関連の設定
+        # FSNet-related settings
         if 'FSNet' in self.args.model and self.args.online_method == 'Online':
             self.args.online_method = 'FSNet'
 
         if self.args.online_method == 'FSNet' and 'TCN' in self.args.model:
             self.args.model = self.args.model.replace('TCN', 'FSNet')
 
-        # オンライン手法固有の設定
-        if self.args.online_method == 'Online':
-            self.args.pretrain = True
-            self.args.only_test = True
-
-        if 'FSNet' in self.args.model:
-            self.args.pretrain = False
-        elif self.args.online_method.lower() in settings.peft_methods:
-            self.args.pretrain = True
-            self.args.freeze = True
-
-        # SOLID固有の設定
-        if self.args.online_method == 'SOLID':
-            self.args.pretrain = True
-            self.args.only_test = True
-            self.args.online_method = 'Online'
-            if not self.args.whole_model:
-                self.args.freeze = True
-
     def get_seed_offset(self, iteration):
-        """モデルに応じたシードオフセットを取得"""
-        if self.args.border_type:
-            if self.args.model in ['PatchTST', 'iTransformer']:
-                return 2021 + iteration
-            else:
-                return 2023 + iteration
-        else:
-            return 2023 + iteration if self.args.model == 'iTransformer' else 2021 + iteration
-
-    def get_pretrain_lr(self, dataset):
-        """モデルに応じたプリトレーニング学習率を取得"""
-        model_key = self.args.model + ("_RevIN" if self.args.normalization else "")
-
-        if self.args.online_method:
-            pretrain_lr = settings.pretrain_lr_online_dict[model_key][dataset]
-        else:
-            pretrain_lr = settings.pretrain_lr_dict[self.args.model][dataset]
-
-        # iTransformer + Weather の特殊ケース
-        if not self.args.border_type and self.args.model == 'iTransformer' and dataset == 'Weather':
-            pretrain_lr = 0.0001
-
-        return pretrain_lr
-
-    def should_drop_last_patchtst(self):
-        """PatchTSTでドロップアウトすべきかチェック"""
-        return self.args.border_type != 'online' and self.args.model == 'PatchTST'
+        """Get seed offset according to model"""
+        return 2025 + iteration
 
     def get_model_info(self):
-        """モデル情報を取得"""
+        """Get model information"""
         info = f"Model: {self.args.model}"
         if self.args.ensemble:
             info += " (Ensemble)"
@@ -627,296 +459,498 @@ class ModelManager:
 
 
 # =====================================
-# 結果管理クラス
+# Result Manager Class
 # =====================================
 
 class ResultManager:
-    """結果処理を担当するクラス"""
+    """Class responsible for result processing"""
 
-    def __init__(self):
-        self.results = {'mse': [], 'mae': []}
+    def __init__(self, savepath):
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(savepath), exist_ok=True)
+        self.json_path = os.path.join(savepath, 'results.json')
+        # Initialize with empty dict to allow dynamic phase addition
+        self.results = {}
         self.skip_file_processed = False
 
-    def add_result(self, mse, mae):
-        """結果を追加"""
-        self.results['mse'].append(mse)
-        self.results['mae'].append(mae)
+    def _ensure_phase_exists(self, phase):
+        """Create phase if it doesn't exist"""
+        if phase not in self.results:
+            self.results[phase] = {'mse': [], 'mae': [], 'seed': []}
 
-    def load_from_skip_file(self, skip_file_path):
-        """スキップファイルから結果を読み込み"""
-        if not skip_file_path or not os.path.exists(skip_file_path):
+    def _has_duplicate_seed(self, phase, seed):
+        """Check if the same seed already exists in the specified phase"""
+        if phase not in self.results:
+            return False
+        return seed in self.results[phase]['seed']
+
+    def _remove_duplicate_seed(self, phase, seed):
+        """Remove results with the same seed in the specified phase"""
+        if phase not in self.results:
+            return
+
+        try:
+            # Get index of seed
+            seed_index = self.results[phase]['seed'].index(seed)
+            # Remove corresponding mse, mae, seed
+            self.results[phase]['mse'].pop(seed_index)
+            self.results[phase]['mae'].pop(seed_index)
+            self.results[phase]['seed'].pop(seed_index)
+        except ValueError:
+            # Do nothing if seed is not found
+            pass
+
+    def add_result(self, mse, mae, seed=None, phase='test'):
+        """Add result (replace if seed is duplicate)
+
+        Args:
+            mse: MSE value
+            mae: MAE value
+            seed: Seed value
+            phase: Phase (any string, automatically created if it doesn't exist)
+        """
+        # Create phase automatically if it doesn't exist
+        self._ensure_phase_exists(phase)
+
+        # Remove if the same seed already exists
+        if seed is not None and self._has_duplicate_seed(phase, seed):
+            self._remove_duplicate_seed(phase, seed)
+
+        self.results[phase]['mse'].append(mse)
+        self.results[phase]['mae'].append(mae)
+        self.results[phase]['seed'].append(seed)
+        self.skip_file_processed = False
+
+    def load_from_skip_file(self, current_seed):
+        """
+        Load results from skip file and determine whether to skip experiment with specified seed
+
+        Args:
+            current_seed (int): Seed value used in current experiment
+
+        Returns:
+            bool: True if result for current_seed already exists (skip experiment)
+                  False if result doesn't exist (run experiment)
+
+        Note:
+            - Found results are automatically added to self.results (avoiding duplicates)
+        """
+        # If result file doesn't exist, don't skip (run experiment)
+        if not os.path.exists(self.json_path):
             return False
 
         try:
-            with open(skip_file_path, 'rt', encoding='utf-8', errors='ignore') as f:
-                for line in f.readlines():
-                    if line.startswith('mse:'):
-                        splits = line.split(',')
-                        mse, mae = splits[0].split(':')[1], splits[1].split(':')[1]
-                        self.results['mse'].append(float(mse))
-                        self.results['mae'].append(float(mae))
+            # Load JSON file and add results for current_seed to self.results
+            with open(self.json_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                data = json.load(f)
+
+                # Support new data structure (results saved by phase)
+                if 'raw_results' in data:
+                    raw_results = data['raw_results']
+                    found_any_result = False
+
+                    # Process all phases (dynamic support)
+                    # e.g., train, valid, test, test1, test2, test3, etc.
+                    for phase in raw_results.keys():
+                        # Confirm that phase is in dict format and has seed key
+                        if isinstance(raw_results[phase], dict) and 'seed' in raw_results[phase]:
+                            # Check all seeds in this phase
+                            for i, seed in enumerate(raw_results[phase]['seed']):
+                                # If result matching current seed is found
+                                if seed == current_seed:
+                                    # Get corresponding MSE and MAE
+                                    mse = float(raw_results[phase]['mse'][i])
+                                    mae = float(raw_results[phase]['mae'][i])
+
+                                    # Add result to self.results (add_result method handles duplicate check)
+                                    self.add_result(mse, mae, seed, phase)
+                                    found_any_result = True
+
+                    # Skip if at least one result is found
+                    if found_any_result:
                         self.skip_file_processed = True
                         return True
+
         except Exception as e:
+            # Display warning and run experiment if file loading error occurs
             print(f"Warning: Failed to load skip file: {e}")
 
+        # Run experiment if result for current_seed is not found
         return False
 
-    def has_results(self):
-        """結果が存在するかチェック"""
-        return len(self.results['mse']) > 0
-
     def get_final_results(self):
-        """最終結果を取得（平均と標準偏差）"""
+        """Get final results (mean and standard deviation)"""
         final_results = {}
-        for k in self.results.keys():
-            if len(self.results[k]) > 0:
-                results_array = np.array(self.results[k])
-                final_results[k] = [results_array.mean(), results_array.std()]
-            else:
-                final_results[k] = [0.0, 0.0]
+        # Process all phases (dynamic support)
+        for phase in self.results.keys():
+            final_results[phase] = {}
+            for metric in ['mse', 'mae']:
+                if len(self.results[phase][metric]) > 0:
+                    results_array = np.array(self.results[phase][metric])
+                    final_results[phase][metric] = [results_array.mean(), results_array.std()]
+                else:
+                    final_results[phase][metric] = [0.0, 0.0]
         return final_results
 
     def display_results(self):
-        """結果を表示"""
-        final_results = self.get_final_results()
-        print("\n" + "="*50)
-        print("FINAL RESULTS")
-        print("="*50)
-        for metric, values in final_results.items():
-            mean_val, std_val = values
-            print(f"{metric.upper()}: {mean_val:.6f} ± {std_val:.6f}")
+        """Display results (including existing results)"""
+        # Load and display existing result file if it exists
+        if os.path.exists(self.json_path):
+            try:
+                with open(self.json_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                    data = json.load(f)
+                    if 'results' in data:
+                        final_results = data['results']
+                    else:
+                        final_results = self.get_final_results()
+                print("\n" + "="*50)
+                print("FINAL RESULTS (including existing results)")
+                print("="*50)
+            except Exception as e:
+                print(f"Warning: Failed to load existing results for display: {e}")
+                final_results = self.get_final_results()
+                print("\n" + "="*50)
+                print("FINAL RESULTS")
+                print("="*50)
+        else:
+            final_results = self.get_final_results()
+            print("\n" + "="*50)
+            print("FINAL RESULTS")
+            print("="*50)
+
+        # Process all phases (dynamic support)
+        for phase in sorted(final_results.keys()):
+            print(f"\n{phase.upper()} RESULTS:")
+            for metric, values in final_results[phase].items():
+                mean_val, std_val = values
+                print(f"  {metric.upper()}: {mean_val:.6f} ± {std_val:.6f}")
         print("="*50)
         return final_results
 
-    def save_results(self, file_path, experiment_info=None):
-        """結果をファイルに保存"""
+    def _merge_results_without_duplicates(self, existing_results, current_results):
+        """Merge existing results with current results avoiding duplicates"""
+        merged_results = existing_results.copy()
+
+        for phase in current_results.keys():
+            if phase not in merged_results:
+                merged_results[phase] = {'mse': [], 'mae': [], 'seed': []}
+
+            # Process each entry in current results
+            for i, seed in enumerate(current_results[phase]['seed']):
+                if seed is not None:
+                    # Check if the same seed exists in existing results
+                    if seed in merged_results[phase]['seed']:
+                        # Remove entry with same seed from existing results
+                        existing_index = merged_results[phase]['seed'].index(seed)
+                        merged_results[phase]['mse'].pop(existing_index)
+                        merged_results[phase]['mae'].pop(existing_index)
+                        merged_results[phase]['seed'].pop(existing_index)
+
+                # Add new result
+                merged_results[phase]['mse'].append(current_results[phase]['mse'][i])
+                merged_results[phase]['mae'].append(current_results[phase]['mae'][i])
+                merged_results[phase]['seed'].append(seed)
+
+        return merged_results
+
+    def save_results(self, experiment_info=None):
+        """Save results to file (merge with existing results avoiding duplicates)"""
         try:
-            final_results = self.get_final_results()
+            # Load existing result file if it exists
+            existing_results = {}
+            if os.path.exists(self.json_path):
+                try:
+                    with open(self.json_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                        existing_data = json.load(f)
+                        if 'raw_results' in existing_data:
+                            existing_results = existing_data['raw_results']
+                except Exception as e:
+                    print(f"Warning: Failed to load existing results: {e}")
+                    existing_results = {}
+
+            # Merge existing results with current results avoiding duplicates
+            merged_results = self._merge_results_without_duplicates(existing_results, self.results)
+
+            # Calculate final results
+            final_results = {}
+            for phase in merged_results.keys():
+                final_results[phase] = {}
+                for metric in ['mse', 'mae']:
+                    if len(merged_results[phase][metric]) > 0:
+                        results_array = np.array(merged_results[phase][metric])
+                        final_results[phase][metric] = [results_array.mean(), results_array.std()]
+                    else:
+                        final_results[phase][metric] = [0.0, 0.0]
+
             save_data = {
                 'results': final_results,
-                'raw_results': self.results,
+                'raw_results': merged_results,
                 'timestamp': datetime.datetime.now().isoformat(),
                 'experiment_info': experiment_info or {}
             }
 
-            # ディレクトリが存在しない場合は作成
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-            with open(file_path, 'w') as f:
+            with open(self.json_path, 'w') as f:
                 json.dump(save_data, f, indent=2)
 
-            print(f"Results saved to: {file_path}")
+            print(f"Results saved to: {self.json_path}")
             return True
         except Exception as e:
             print(f"Warning: Failed to save results: {e}")
             return False
 
     def get_summary_stats(self):
-        """結果の統計サマリーを取得"""
-        if not self.has_results():
-            return {}
-
+        """Get statistical summary of results"""
         summary = {}
-        for metric, values in self.results.items():
-            if len(values) > 0:
-                values_array = np.array(values)
-                summary[metric] = {
-                    'count': len(values),
-                    'mean': float(values_array.mean()),
-                    'std': float(values_array.std()),
-                    'min': float(values_array.min()),
-                    'max': float(values_array.max()),
-                    'median': float(np.median(values_array))
-                }
+        # Process all phases (dynamic support)
+        for phase in self.results.keys():
+            summary[phase] = {}
+            for metric in ['mse', 'mae']:
+                if len(self.results[phase][metric]) > 0:
+                    values_array = np.array(self.results[phase][metric])
+                    summary[phase][metric] = {
+                        'count': len(self.results[phase][metric]),
+                        'mean': float(values_array.mean()),
+                        'std': float(values_array.std()),
+                        'min': float(values_array.min()),
+                        'max': float(values_array.max()),
+                        'median': float(np.median(values_array))
+                    }
+                else:
+                    summary[phase][metric] = {
+                        'count': 0,
+                        'mean': 0.0,
+                        'std': 0.0,
+                        'min': 0.0,
+                        'max': 0.0,
+                        'median': 0.0
+                    }
 
         return summary
 
     def reset(self):
-        """結果をリセット"""
-        self.results = {'mse': [], 'mae': []}
+        """Reset results"""
+        # Initialize with empty dict to allow dynamic phase addition
+        self.results = {}
         self.skip_file_processed = False
 
 
-def main():
-    """
-    メイン関数 - 実験全体の流れを制御
-    - 引数のパース、各種マネージャの初期化
-    - データ・モデル・パス・結果の管理
-    - 実験ループ（シード・学習・検証・テスト・予測）
-    - 結果の集計と表示
-    """
-    # 現在時刻を表示（ログ用）
-    cur_sec = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(cur_sec)
+def load_checkpoint_for_online_learning(exp, args):
+    """Load checkpoint for online learning"""
+    if not args.checkpoints:
+        print('Checkpoints is not specified')
+        return False
 
-    # 構造化された引数解析器を使用
-    parser = setup_argument_parser()
-    args = parser.parse_args()
+    try:
+        from util.test_if_model_learned import comprehensive_model_check
+        comprehensive_model_check(exp.model)
+        print('load checkpoint from', args.load_path)
+        exp.load_checkpoint(args.load_path)
+        comprehensive_model_check(exp.model)
+        print('check if model is learned')
+        return True
+    except Exception as e:
+        print(f"Warning: Failed to load checkpoint: {e}")
+        return False
 
-    # GPU管理クラスの初期化（デバイス選択やシード管理）
-    gpu_manager = GPUManager(args)
 
-    # モデル管理クラスの初期化（モデル固有設定やシード管理）
-    model_manager = ModelManager(args)
+def setup_online_optimizer(exp, args):
+    """Configure optimizer for online learning"""
+    if hasattr(exp, 'model_optim') and exp.model_optim is not None:
+        for j in range(len(exp.model_optim.param_groups)):
+            exp.model_optim.param_groups[j]['lr'] = args.online_learning_rate
+        print('Online learning rate of model_optim is', exp.model_optim.param_groups[0]['lr'])
+        return True
+    else:
+        print('model_optim not available for this experiment class')
+        return False
 
-    # 結果管理クラスの初期化（MSE/MAE等の記録・集計）
-    result_manager = ResultManager()
 
-    # データセットごとの入出力次元・パス等を設定
-    args.enc_in, args.c_out = data_settings[args.dataset][args.features]
-    args.data_path = data_settings[args.dataset]['data']
-    args.data = args.data_path[:5] if args.data_path.startswith('ETT') else 'custom'
-    args.dec_in = args.enc_in
-    args.timeenc = 2 # 時間エンコーディング方式
+def run_offline_training_for_online_method(exp, ii, gpu_manager):
+    """Execute offline training for online method"""
+    print('>>>>>>>offline training for online method : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(ii))
+    exp.train()
+    gpu_manager.clear_cache()
 
-    # タグの先頭に'_'を付与
-    if args.tag and args.tag[0] != '_':
-        args.tag = '_' + args.tag
 
-    # 境界設定（データ分割）
-    if hasattr(args, 'border_type'):
-        settings.get_borders(args)
+def run_online_phase(exp, args, result_manager, fix_seed, ii, gpu_manager, phase):
+    """Execute each phase of online learning"""
+    print(f'>>>>>>>Online {phase} : {ii}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+    save_phase = phase+'_online'
+    mse, mae = exp.online(phase=phase, savename=save_phase, show_progress=True)
+    result_manager.add_result(mse, mae, fix_seed, save_phase)
+    gpu_manager.clear_cache()
 
-    # オンライン境界の場合はpatienceを最大3に制限(EarlyStoppingのデフォルト値)
-    if args.border_type == 'online':
-        args.patience = min(args.patience, 3)
+def run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, phase, timing=''):
+    """Execute each phase of offline learning"""
+    print(f'>>>>>>>Offline {phase}{timing} : {ii}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+    save_phase = phase+'_offline'+timing
+    mse, mae = exp.test(phase=phase, savename=save_phase)
+    result_manager.add_result(mse, mae, fix_seed, save_phase)
+    gpu_manager.clear_cache()
 
-    # モデル管理クラスを使用してオンライン手法設定
-    model_manager.setup_online_method_config()
 
-    # 実験クラスの決定（オンライン手法が指定されていればExp_XXXを選択）
-    Exp = Exp_Main
+def run_online_learning_experiment(exp, args, result_manager, fix_seed, ii, gpu_manager):
+    """Execute online learning experiment"""
+    # Load checkpoint
+    checkpoint_loaded = load_checkpoint_for_online_learning(exp, args)
+
+    # If offline training is needed
+    if args.train:
+        run_offline_training_for_online_method(exp, ii, gpu_manager)
+
+    # Configure optimizer for online learning
+    setup_online_optimizer(exp, args)
+
+    # Execute each phase of online learning
+    if args.online_train:
+        run_online_phase(exp, args, result_manager, fix_seed, ii, gpu_manager, 'train')
+
+    if args.online_valid:
+        run_online_phase(exp, args, result_manager, fix_seed, ii, gpu_manager, 'valid')
+
+    if args.online_test:
+        if args.border_type == 'online':
+            run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test', timing='_beforeOnline')
+            run_online_phase(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test')
+            run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test', timing='_afterOnline')
+
+        elif args.border_type == 'online3test':
+            if args.online_method in ['Chronos']: # If model is not updated
+                run_online_phase(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test1')
+                run_online_phase(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test2')
+                run_online_phase(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test3')
+            else:
+                # Test before online learning
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test1', timing='_beforeOnlinetest1')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test2', timing='_beforeOnlinetest1')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test3', timing='_beforeOnlinetest1')
+
+                run_online_phase(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test1')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test1', timing='_afterOnlinetest1')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test2', timing='_afterOnlinetest1')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test3', timing='_afterOnlinetest1')
+
+                run_online_phase(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test2')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test1', timing='_afterOnlinetest2')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test2', timing='_afterOnlinetest2')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test3', timing='_afterOnlinetest2')
+
+                run_online_phase(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test3')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test1', timing='_afterOnlinetest3')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test2', timing='_afterOnlinetest3')
+                run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test3', timing='_afterOnlinetest3')
+
+
+def run_offline_learning_experiment(exp, args, result_manager, fix_seed, ii, gpu_manager):
+    """Execute offline learning experiment"""
+    if args.train:
+        print('>>>>>>>offline learning training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(ii))
+        exp.train()
+        gpu_manager.clear_cache()
+
+    if args.valid:
+        run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'valid')
+
+    if args.test:
+        if args.border_type == 'online':
+            run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test')
+        elif args.border_type == 'online3test':
+            run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test1')
+            run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test2')
+            run_offline_test(exp, args, result_manager, fix_seed, ii, gpu_manager, 'test3')
+
+
+def run_single_experiment_iteration(args, result_manager, model_manager, gpu_manager, ii):
+    """Execute a single experiment iteration"""
+    # Configure paths
+    args.ii = ii
+    args.savepath_itr = os.path.join(args.savepath, str(ii))
+
+    if args.checkpoints:
+        args.checkpoints_itr = os.path.join(args.checkpoints, str(ii))
+        args.load_path = os.path.join(args.checkpoints_itr, 'checkpoints', 'checkpoint.pth')
+        print('Checkpoints in', args.load_path)
+
+    # Configure seed
+    fix_seed = model_manager.get_seed_offset(ii)
+    gpu_manager.setup_seed(fix_seed)
+    print('Seed:', fix_seed)
+
+    # Process skip file (reuse existing results)
+    if args.skip:
+        if result_manager.load_from_skip_file(fix_seed):
+            print('Skip this experiment with seed {} (result already exists)'.format(fix_seed))
+            return
+
+    # Determine experiment class
     if args.online_method:
         Exp = getattr(exps, 'Exp_' + args.online_method)
+    else:
+        Exp = Exp_Main
 
-    # ハイパーパラメータの上書き
+    # Override hyperparameters
     if args.override_hyper and args.model in settings.hyperparams:
-        for k, v in settings.get_hyperparams(args.dataset, args.model, args, args.reduce_bs).items():
+        for k, v in settings.get_hyperparams(args.dataset, args.model, args).items():
             args.__setattr__(k, v)
 
-    # パス管理クラスの初期化
-    path_manager = PathManager(args)
-
-    # パス管理クラスを使用してflagを生成（実験識別用）
-    flag = path_manager.generate_flag()
+    # Create experiment object
+    exp = Exp(args)
 
     print('Args in experiment:')
     print(args)
     print(f'Using device: {gpu_manager.get_device_info()}')
     print(f'{model_manager.get_model_info()}')
 
-    # データ・ローダ・検証用変数の初期化
-    train_data, train_loader, vali_data, vali_loader, test_data, test_loader = None, None, None, None, None, None
+    # Execute experiment
+    if not args.online_method:
+        run_offline_learning_experiment(exp, args, result_manager, fix_seed, ii, gpu_manager)
+    else:
+        run_online_learning_experiment(exp, args, result_manager, fix_seed, ii, gpu_manager)
 
-    # 実験の繰り返し（args.itr回）
+
+def setup_experiment_args(args):
+    """Configure experiment arguments"""
+    # Configure input/output dimensions and paths for each dataset
+    args.enc_in, args.c_out = data_settings[args.dataset][args.features]
+    args.dec_in = args.enc_in
+    args.data_path = data_settings[args.dataset]['data']
+    args.data = args.data_path[:5] if args.data_path.startswith('ETT') else 'custom'
+    args.timeenc = 2  # Time encoding method
+
+
+def main():
+    """
+    Main function - controls overall experimental flow
+    - Parse arguments, initialize various managers
+    - Manage data, models, paths, and results
+    - Experiment loop (seed, training, validation, testing, prediction)
+    - Aggregate and display results
+    """
+    # Display current time (for logging)
+    cur_sec = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(cur_sec)
+
+    # Use structured argument parser
+    parser = setup_argument_parser()
+    args = parser.parse_args()
+
+    # Initialize various manager classes
+    gpu_manager = GPUManager(args)
+    model_manager = ModelManager(args)
+    result_manager = ResultManager(args.savepath)
+
+    # Configure experiment arguments
+    setup_experiment_args(args)
+
+    # Repeat experiments (args.itr times)
     for ii in range(args.itr):
+        run_single_experiment_iteration(args, result_manager, model_manager, gpu_manager, ii)
+        # Save results after each iteration (including when skipped)
+        result_manager.save_results()
 
-        # スキップファイルの処理（既存結果の再利用）
-        if ii == 0 and args.skip:
-            if args.wo_test:
-                continue
-            if result_manager.load_from_skip_file(args.skip):
-                if result_manager.has_results():
-
-                    continue
-
-        # モデル管理クラスを使用してシードオフセット取得
-        fix_seed = model_manager.get_seed_offset(ii)
-
-        # GPU管理クラスを使用してシード設定
-        gpu_manager.setup_seed(fix_seed)
-        print('Seed:', fix_seed)
-
-        # 実験設定名の生成
-        setting = path_manager.get_setting_name(flag, ii)
-
-        # プリトレーニング時のパス・学習率設定 (Online学習するときにTrueになる)(pretrainするときはここはFalse)
-        if args.pretrain:
-            pretrain_lr = model_manager.get_pretrain_lr(args.dataset)
-            pretrain_setting = path_manager.get_pretrain_setting_name(pretrain_lr, ii)
-            args.pred_path, args.load_path = path_manager.get_pretrain_paths(pretrain_setting)
-            if args.online_method == 'OneNet':
-                fsnet_name = "FSNet_RevIN"
-                args.fsnet_path = path_manager.get_fsnet_path(fsnet_name, ii)
-
-        # 実験クラスのインスタンス化
-        # _build_modelを実行, online_methodの場合，load_pathからモデルを読み込む
-        exp = Exp(args)
-
-        # データセットの初回取得
-        if train_data is None:
-            train_data, train_loader = exp._get_data('train')
-        # 境界情報の設定
-        if not hasattr(args, 'borders'):
-            args.borders = train_data.borders
-            # PatchTSTのラストドロップ判定
-            if model_manager.should_drop_last_patchtst():
-                settings.drop_last_PatchTST(args) # SOLID dropout the last when data split = 7:2:1
-        exp.wrap_data_kwargs['borders'] = args.borders
-
-        # チェックポイントパスの生成
-        checkpoint_path = path_manager.get_checkpoint_path(setting)
-        if args.online_method not in ['Online', 'SOLID', 'ER', 'DERpp']:
-        # if args.online_method not in ['Online', 'SOLID', 'ER', 'DERpp', 'BTOA', 'Proposed']:
-            print('Checkpoints in', checkpoint_path)
-            # trainingをしない場合はcheckpointを読み込む
-            # OnlineMethodはonly_test=Trueである．
-            # 基本的にdo_valid=Falseである．
-            if (args.only_test or args.do_valid) and os.path.exists(checkpoint_path):
-                print('Loading', checkpoint_path)
-                exp.load_checkpoint(checkpoint_path)
-                print('Learning rate of model_optim is', exp.model_optim.param_groups[0]['lr'])
-            # trainingをする場合
-            else:
-                print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-                # trainはExp_Mainのメソッド
-                _, train_data, train_loader, vali_data, vali_loader = exp.train(setting, train_data, train_loader, vali_data, vali_loader)
-                # GPU管理クラスを使用してキャッシュクリア
-                gpu_manager.clear_cache()
-
-        # オンライン学習率の調整(SOLIDは除く)
-        if args.online_learning_rate is not None and not isinstance(exp, Exp_SOLID):
-            for j in range(len(exp.model_optim.param_groups)):
-                exp.model_optim.param_groups[j]['lr'] = args.online_learning_rate
-            print('Adjust learning rate of model_optim to', exp.model_optim.param_groups[0]['lr'])
-
-        # バリデーション（オンライン手法かつdo_valid=True）
-        # 基本的にdo_valid=Falseなので，実施されない(hyperparam tuningのためかな？)
-        if args.do_valid and args.online_method and args.local_rank <= 0:
-            assert isinstance(exp, Exp_Online) # Exp_OnlineやそのサブクラスであるExp_FSNet, Exp_OneNetなどであることを確認
-            online_data=vali_data if isinstance(vali_data, Dataset_Recent) else None
-            mse, mae = exp.online(online_data, phase='val', show_progress=True)[:2]
-            print('Best Valid MSE:', mse)
-            result_manager.add_result(mse, mae)
-            continue
-
-        # 予測モード
-        if args.do_predict:
-            # 基本的にdo_predict=Falseなので，実施されない
-            print('>>>>>>>predicting : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            gpu_manager.setup_seed(fix_seed)
-            mse, mae = exp.predict(checkpoint_path, setting, load=True)[:2]
-            result_manager.add_result(mse, mae)
-        # テストモード
-        elif not args.wo_test and not args.train_only and args.local_rank <= 0:
-            print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            if isinstance(exp, Exp_Online):
-                gpu_manager.setup_seed(fix_seed)
-                if not isinstance(exp, Exp_SOLID) and not args.wo_valid:
-                    vali_data = None
-                    gpu_manager.clear_cache()
-                    gc.collect()
-                    exp.update_valid() # バリデーションデータを使用し，modelをオンライン更新
-                mse, mae, test_data = exp.online(test_data, show_progress=True)
-            else:
-                mse, mae, test_data, test_loader = exp.test(setting, test_data, test_loader)
-            result_manager.add_result(mse, mae)
-        # GPU管理クラスを使用してキャッシュクリア
-        gpu_manager.clear_cache()
-
-    # 結果管理クラスを使用して結果を表示
+    # Display and save final results
     result_manager.display_results()
+    result_manager.save_results()
 
 
 if __name__ == '__main__':

@@ -1,24 +1,0 @@
-2025-07-08 08:42:01
-Args in experiment:
-Namespace(train_only=False, wo_test=False, wo_valid=False, only_test=True, do_valid=False, model='PatchTST', override_hyper=True, compile=False, reduce_bs=False, normalization=None, checkpoints='./checkpoints/', tag='', online_method='Online', skip='logs/online/PatchTST_Online_ETTh2_48_onlinelr0.00003.log2', online_learning_rate=3e-05, val_online_lr=True, diff_online_lr=False, save_opt=True, leakage=False, debug=False, pretrain=True, freeze=False, act='sigmoid', tune_mode='down_up', ema=0, concept_dim=200, bottleneck_dim=32, individual_generator=False, share_encoder=False, use_mean=True, joint_update_valid=False, comment='', wo_clip=False, learning_rate_w=0.001, learning_rate_bias=0.001, lambda_period=0.1, whole_model=False, continual=False, dist='normal', num_epochs=100, VAE_learning_rate=0.002, latent_dim=10, beta=5, tcvae=False, exclude_mutinfo=False, beta_anneal=False, lambda_anneal=False, mss=False, conv=False, save='ETTh2', log_freq=200, mean=0.9, std=0.1, low_limit=0.7, high_limit=1, aug1='na', aug2='resample', mini_batch=5, buffer_size=100, border_type='online', root_path='./dataset/', dataset='ETTh2', features='M', target='OT', freq='h', wrap_data_class=[], pin_gpu=True, use_time=False, seq_len=60, label_len=48, pred_len=48, individual=False, fc_dropout=0.3, head_dropout=0.0, patch_len=16, stride=8, padding_patch='end', revin=1, affine=0, subtract_last=0, decomposition=0, kernel_size=25, drop_last=False, embed_type=0, d_model=16, n_heads=4, e_layers=3, d_layers=1, d_ff=128, moving_avg=25, factor=3, distil=True, dropout=0.3, embed='timeF', activation='gelu', output_attention=False, output_enc=False, do_predict=False, seg_len=24, win_size=2, num_routers=10, class_strategy='projection', subgraph_size=20, in_dim=1, gpt_layers=6, tmax=10, patch_size=16, num_workers=0, itr=1, train_epochs=25, begin_valid_epoch=0, batch_size=32, patience=3, optim='Adam', learning_rate=0.0001, des='test', loss='mse', lradj='type3', use_amp=False, pct_start=0.3, warmup_epochs=5, use_gpu=True, gpu=0, use_multi_gpu=False, devices='0,1,2,3', test_flop=False, local_rank=-1, ensemble=False, find_unused_parameters=False, model_id='ETTh2_60_48_PatchTST', enc_in=7, c_out=7, data_path='ETTh2.csv', data='ETTh2', dec_in=7, timeenc=2, borders=([0, 2820, 3540], [2880, 3600, 14400]))
-Using device: GPU 0
-Model: PatchTST
-Seed: 2021
-Use GPU: cuda:0
-Load checkpoints from ./checkpoints/ETTh2_60_48_PatchTST_online_ftM_sl60_ll48_pl48_lr0.0001_dm16_nh4_el3_dl1_df128_fc3_ebtimeF_dtTrue_test_0/checkpoint.pth
-Learning rate of model_optim is 2.541865828329001e-05
-train 2773
-Adjust learning rate of model_optim to 3e-05
->>>>>>>testing : ETTh2_60_48_PatchTST_online_ftM_sl60_ll48_pl48_lr0.0001_dm16_nh4_el3_dl1_df128_fc3_ebtimeF_dtTrue_test_0<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-val 720
-  0%|          | 0/720 [00:00<?, ?it/s] 46%|████▌     | 330/720 [00:10<00:11, 32.94it/s] 96%|█████████▌| 689/720 [00:20<00:00, 34.67it/s]100%|██████████| 720/720 [00:20<00:00, 34.47it/s]
-test 10753
-  0%|          | 0/10753 [00:00<?, ?it/s]  4%|▍         | 434/10753 [00:10<03:58, 43.34it/s]  8%|▊         | 868/10753 [00:20<03:56, 41.82it/s] 12%|█▏        | 1277/10753 [00:30<03:49, 41.29it/s] 16%|█▌        | 1689/10753 [00:40<03:39, 41.22it/s] 20%|█▉        | 2101/10753 [00:50<03:30, 41.11it/s] 23%|██▎       | 2516/10753 [01:00<03:19, 41.22it/s] 27%|██▋       | 2931/10753 [01:10<03:09, 41.25it/s] 31%|███       | 3345/10753 [01:20<02:59, 41.21it/s] 35%|███▌      | 3773/10753 [01:30<02:47, 41.69it/s] 39%|███▉      | 4201/10753 [01:41<02:37, 41.59it/s] 43%|████▎     | 4615/10753 [01:51<02:28, 41.20it/s] 47%|████▋     | 5019/10753 [02:01<02:20, 40.93it/s] 50%|█████     | 5422/10753 [02:11<02:10, 40.74it/s] 54%|█████▍    | 5853/10753 [02:21<01:58, 41.42it/s] 59%|█████▊    | 6301/10753 [02:31<01:44, 42.41it/s] 63%|██████▎   | 6749/10753 [02:42<01:35, 42.07it/s] 67%|██████▋   | 7163/10753 [02:52<01:25, 41.79it/s] 70%|███████   | 7575/10753 [03:02<01:16, 41.35it/s] 74%|███████▍  | 7982/10753 [03:12<01:07, 41.15it/s] 78%|███████▊  | 8389/10753 [03:22<00:57, 40.97it/s] 82%|████████▏ | 8804/10753 [03:32<00:47, 41.11it/s] 86%|████████▌ | 9219/10753 [03:42<00:37, 41.00it/s] 90%|████████▉ | 9627/10753 [03:53<00:27, 40.80it/s] 93%|█████████▎| 10034/10753 [04:03<00:17, 40.75it/s] 97%|█████████▋| 10449/10753 [04:13<00:07, 40.97it/s]100%|██████████| 10753/10753 [04:20<00:00, 41.28it/s]
-mse:2.882596506601784, mae:0.6806338309443497
-
-==================================================
-FINAL RESULTS
-==================================================
-MSE: 2.882597 ± 0.000000
-MAE: 0.680634 ± 0.000000
-==================================================

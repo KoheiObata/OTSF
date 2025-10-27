@@ -1,22 +1,18 @@
 """
-実験モジュール
-時系列予測実験の各種クラスを提供
+Experiment module
+Provides various classes for time series forecasting experiments
 
 Classes:
-    Exp_Basic: 実験の基本クラス
-    Exp_Main: メイン実験クラス
-    Exp_Online: オンライン学習実験クラス
-    Exp_SOLID: SOLID実験クラス
-    Exp_Proceed: Proceed実験クラス
+    Exp_Basic: Basic experiment class
+    Exp_Main: Main experiment class
+    Exp_Online: Online learning experiment class
+    Exp_XX: XX experiment class
 """
 
 from .exp_basic import Exp_Basic
 from .exp_main import Exp_Main
 from .exp_online import Exp_Online
+from .exp_linearRLS import Exp_LinearRLS
+from .exp_foundation import Exp_Chronos
 from .exp_er import Exp_ER, Exp_DERpp
-from .exp_fsnet import Exp_FSNet, Exp_OneNet
-from .exp_solid import Exp_SOLID
-from .exp_solidpp import Exp_SOLIDpp
-from .exp_proceed import Exp_Proceed
-from .exp_btoa import Exp_BTOA
-from .exp_proposed import Exp_Proposed
+from .exp_ewc import Exp_EWC
