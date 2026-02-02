@@ -1,6 +1,8 @@
 # OTSF
+> **🚧 Under Construction: We are currently eagerly working to polish the implementation for better usability and reproducibility. The complete version will be available soon.**
 
 This repository provides code and resources for evaluating Online Time Series Forecasting (OTSF) models, focusing on realistic adaptation to non-stationarity (concept drift).
+
 
 ## Outstanding Features
 ### Corrected & Challenging Datasets
@@ -35,5 +37,5 @@ __Others__
 This project uses Python 3.10.14.
 Please install the required libraries from `requirements.txt`.
 Please refer to the directory `scripts`. \
-`run_all.sh` will reproduce all the experiments on the paper.
+`scripts/online3test/run_all.sh` will reproduce all the experiments on the paper.
 
